@@ -437,6 +437,21 @@ older versions are refused.
 | Python | 3.11.15 | 3.10 or newer; `install.sh` prefers 3.11 and accepts what you have |
 | SQLite | 3.50.4 | **none** — it is compiled into the program |
 
+Everything above, and every measurement quoted in this README, was run on:
+
+> **MacBook Pro (14-inch, 2021)** — Apple M1 Pro, 10 cores (8 performance,
+> 2 efficiency), 32 GB memory, macOS 26.1, arm64.
+
+That is the only machine it has been tested on. It is pure Go plus Python, with
+no platform-specific code, so Linux and Intel Macs should be fine — but "should"
+is doing real work in that sentence, and nobody has checked. Windows builds and
+runs the program, though `install.sh` is a shell script (see **Building**).
+
+Timings scale with the machine. A forecast takes three to four seconds here
+(3.1s and 3.9s on two consecutive runs of `testdata/example.csv`), almost all of
+it loading the model rather than predicting — so a slower disk shows up more
+than a slower CPU, and the horizon barely matters.
+
 **You do not need SQLite installed.** The database is `modernc.org/sqlite`, a
 pure-Go implementation built into the binary, so there is no system library to
 match, no CGo, and nothing to go out of step. That is also why the program

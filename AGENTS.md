@@ -330,7 +330,7 @@ one person's numbers and registered on their machine, so sending it would give
 someone a broken or simply wrong model. `models/finetune.py` does travel, so they
 can train their own.
 
-**Measured on this machine, full fine-tuning vs LoRA:**
+**Measured on the machine in the README (M1 Pro, 32 GB), full fine-tuning vs LoRA:**
 
 | | full | lora |
 |---|---|---|

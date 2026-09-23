@@ -2,7 +2,7 @@
 
 **Chronos-2: no. TimesFM 3.0: partly — the heavy maths yes, the rest no.**
 
-All of it measured on an Apple M1, not reasoned about: torch 2.14.0, onnx 1.23.0,
+All of it measured on an Apple M1 Pro, not reasoned about: torch 2.14.0, onnx 1.23.0,
 onnxruntime 1.30.0, timesfm 3.0.2, chronos-forecasting 2.3.2.
 
 Both exporters were tried: the legacy TorchScript one (`dynamo=False`) and the

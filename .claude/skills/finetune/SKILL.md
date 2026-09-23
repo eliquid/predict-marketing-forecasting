@@ -46,7 +46,7 @@ Never write an accuracy query without `trained_on = 0`.
 
 ## What was already measured, so you need not redo it
 
-Full fine-tuning is feasible on this machine — LoRA is only 19% faster and uses
+Full fine-tuning is feasible on an M1 Pro with 32 GB — LoRA is only 19% faster and uses
 the same peak memory. LoRA was chosen for the 99x smaller checkpoint.
 
 Fine-tuning on 7 series made the forecast **worse** (34.5% MAPE vs 32.7% stock).
