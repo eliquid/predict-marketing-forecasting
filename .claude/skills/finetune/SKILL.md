@@ -1,0 +1,80 @@
+---
+name: finetune
+description: Train or retrain the chronos2ft LoRA adapter on the user's own data. Use when fine-tuning Chronos-2, refreshing the adapter with newer data, or deciding between LoRA and full fine-tuning.
+---
+
+# Fine-tuning Chronos-2
+
+Read `AGENTS.md` §4c first — it holds the measured numbers and the leakage rule.
+
+## Train
+
+```bash
+models/.venv/bin/python models/finetune.py "Campaign report.csv" \
+    --steps 2000 --budget 600
+```
+
+`--budget` is a wall-clock hard stop in seconds; training ends there whatever the
+step count. At ~3 steps/sec, 600s is roughly 1,800 steps. Writes
+`models/finetuned/chronos2ft/` (4.9 MB) and `models/finetuned.json`.
+
+Then it is just another model:
+
+```bash
+./predictmarketing forecast "Campaign report.csv" -model chronos2ft
+```
+
+## Before you believe it helped
+
+**Score it against the stock model on days it never saw.** This is the whole
+point and it is easy to skip:
+
+```bash
+./predictmarketing accuracy -db pm.db
+```
+
+`chronos2ft` will be **absent from that table** if every forecast it has made
+falls inside its training window — that is correct, not a bug. To score it you
+need a forecast whose days are *after* `trained_through`, which means either
+waiting for real days to arrive, or retraining on a cutoff and forecasting past it.
+
+Never write an accuracy query without `trained_on = 0`.
+
+## What was already measured, so you need not redo it
+
+Full fine-tuning is feasible on this machine — LoRA is only 19% faster and uses
+the same peak memory. LoRA was chosen for the 99x smaller checkpoint.
+
+Fine-tuning on 7 series made the forecast **worse** (34.5% MAPE vs 32.7% stock).
+If you are asked to improve on that, the lever is **more series**, not more steps
+or a different learning rate: more accounts, more platforms, or training per ad
+group rather than per campaign.
+
+Learning rates matter and differ by mode: `1e-6` for full, `1e-4` for LoRA. An
+early run used `1e-5` for both and unfairly penalised full fine-tuning.
+
+## Retraining
+
+Just run it again — `models/finetuned.json` is overwritten with the new adapter's
+checksum and cutoff. Old runs in the database keep the old checksum in their
+`model_info`, so past forecasts still say truthfully what produced them.
+
+If you want to keep the old adapter, copy `models/finetuned/chronos2ft/`
+elsewhere first; nothing versions it for you.
+
+## It is not shared
+
+`share.sh` excludes the adapter and its registry. It was fitted to one account's
+numbers, so it is the wrong model for anyone else's data even when it loads.
+Recipients train their own from the same `models/finetune.py`.
+
+## If it will not load
+
+| Message | Cause |
+|---|---|
+| `no fine-tuned model yet` | nothing trained; run `finetune.py` |
+| `the adapter on disk is not the one that was trained` | the file changed since training; retrain |
+| `models/finetuned.json is unreadable` | registry corrupt; retrain |
+
+The adapter config holds an absolute path to the base weights. The worker rewrites
+it on load if the project has moved, so that alone never needs fixing by hand.

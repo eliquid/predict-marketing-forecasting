@@ -1,0 +1,817 @@
+package main
+
+// One test per way this can go quietly wrong. No frameworks, no fixtures.
+//
+// Every test here maps to a real defect found by auditing the tool against its
+// own data, not to a hypothetical.
+
+import (
+	"encoding/json"
+	"fmt"
+	"math"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+)
+
+func writeTemp(t *testing.T, name, body string) string {
+	t.Helper()
+	p := filepath.Join(t.TempDir(), name)
+	if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+// day returns the i'th consecutive day from 2026-01-01, so test data always has
+// real dates. Hand-written "2026-01-32" is how the first draft of these tests
+// accidentally proved the date validation works.
+func day(i int) string {
+	return time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC).AddDate(0, 0, i).Format("2006-01-02")
+}
+
+// goodCSV is a valid consecutive series long enough to be accepted, so each test
+// can focus on the one thing it is checking.
+func goodCSV(n int) string {
+	var b strings.Builder
+	b.WriteString("date,spend\n")
+	for i := 0; i < n; i++ {
+		fmt.Fprintf(&b, "%s,%d\n", day(i), 100+i)
+	}
+	return b.String()
+}
+
+func TestCSVRoundTrip(t *testing.T) {
+	body := "date,spend\n" +
+		"2026-01-01,100.5\n2026-01-02,\"1,200\"\n2026-01-03,£300\n"
+	for i := 3; i < 40; i++ {
+		body += fmt.Sprintf("%s,%d\n", day(i), i)
+	}
+	d, err := readCSV(writeTemp(t, "d.csv", body), nil, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(d.Names) != 1 || d.Names[0] != "spend" {
+		t.Errorf("columns = %v, want [spend]", d.Names)
+	}
+	want := []Point{{"2026-01-01", 100.5}, {"2026-01-02", 1200}, {"2026-01-03", 300}}
+	got := d.Series(AccountEntity, "spend")
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("point %d = %v, want %v", i, got[i], want[i])
+		}
+	}
+}
+
+// Ad exports are commonly newest-first. Reading them in file order reverses the
+// series and produces a confident, meaningless forecast.
+func TestUnsortedCSVIsSortedNotTakenInFileOrder(t *testing.T) {
+	var b strings.Builder
+	b.WriteString("date,spend\n")
+	for i := 39; i >= 0; i-- { // newest first, as ad exports often are
+		fmt.Fprintf(&b, "%s,%d\n", day(i), i)
+	}
+	d, err := readCSV(writeTemp(t, "d.csv", b.String()), nil, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 1; i < len(d.Days); i++ {
+		if d.Days[i-1] >= d.Days[i] {
+			t.Fatalf("not ascending at %d: %s then %s", i, d.Days[i-1], d.Days[i])
+		}
+	}
+	if v := d.Values[AccountEntity]["spend"][0]; v != 0 {
+		t.Errorf("first value = %v, want 0 (series was not reordered)", v)
+	}
+}
+
+// Both models read the series as consecutive days, so a gap silently shifts
+// every forecast date.
+func TestDateGapIsRefused(t *testing.T) {
+	body := goodCSV(40)
+	body = strings.Replace(body, fmt.Sprintf("%s,%d\n", day(20), 120), "", 1)
+	_, err := readCSV(writeTemp(t, "d.csv", body), nil, "")
+	if err == nil {
+		t.Fatal("a missing day must be refused")
+	}
+	if !strings.Contains(err.Error(), day(19)) || !strings.Contains(err.Error(), "missing") {
+		t.Errorf("error should name the gap, got: %v", err)
+	}
+}
+
+func TestTooShortSeriesIsRefused(t *testing.T) {
+	_, err := readCSV(writeTemp(t, "d.csv", goodCSV(5)), nil, "")
+	if err == nil || !strings.Contains(err.Error(), "too few") {
+		t.Fatalf("5 rows should be refused, got %v", err)
+	}
+}
+
+func TestCSVBadRowsAreNamedNotSkipped(t *testing.T) {
+	for _, tc := range []struct{ name, body, want string }{
+		{"bad number", strings.Replace(goodCSV(40), day(2)+",102", day(2)+",oops", 1), "line 4"},
+		{"bad date", strings.Replace(goodCSV(40), day(2)+",102", "not-a-date,102", 1), "line 4"},
+		// A day that carries a different number of rows than the others means a
+		// campaign is missing from it; adding those rows up invents a step.
+		{"uneven rows per day", strings.Replace(goodCSV(40), day(2)+",102", day(1)+",102", 1),
+			"has 2 rows but"},
+		{"ragged row", strings.Replace(goodCSV(40), day(2)+",102", day(2)+",102,9", 1), "columns"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := readCSV(writeTemp(t, "d.csv", tc.body), nil, "")
+			if err == nil {
+				t.Fatal("expected an error, got none")
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("error %q should mention %q", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestCovariateColumnsAreRead(t *testing.T) {
+	var b strings.Builder
+	b.WriteString("date,spend,budget\n")
+	for i := 0; i < 40; i++ {
+		fmt.Fprintf(&b, "%s,%d,%d\n", day(i), 100+i, 500)
+	}
+	d, err := readCSV(writeTemp(t, "d.csv", b.String()), nil, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	col, ok := d.Values[AccountEntity]["budget"]
+	if !ok {
+		t.Fatalf("budget column missing, got %v", d.Names)
+	}
+	if len(col) != len(d.Days) {
+		t.Errorf("budget has %d values, series has %d", len(col), len(d.Days))
+	}
+}
+
+func TestDBRoundTripWithCovariates(t *testing.T) {
+	db, err := openDB(filepath.Join(t.TempDir(), "t.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	d := &Data{
+		Days:     []string{"2026-01-01", "2026-01-02"},
+		Names:    []string{"spend", "budget"},
+		Entities: []string{AccountEntity},
+		Values: map[string]map[string][]float64{
+			AccountEntity: {"spend": {1, 2}, "budget": {10, 20}},
+		},
+	}
+	if err := saveData(db, "s", d); err != nil {
+		t.Fatal(err)
+	}
+	if err := saveData(db, "s", d); err != nil { // re-saving must update, not duplicate
+		t.Fatal(err)
+	}
+	got, err := loadSeries(db, "s", AccountEntity, "spend")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || got[0].Value != 1 {
+		t.Fatalf("target: got %v", got)
+	}
+	cov, err := loadSeries(db, "s", AccountEntity, "budget")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cov) != 2 || cov[1].Value != 20 {
+		t.Fatalf("covariate: got %v", cov)
+	}
+}
+
+func TestCheckForecastRejectsBadOutput(t *testing.T) {
+	if _, err := checkForecast([][]float64{{1, 2, 3}, {1, 2, 3}}, 2, 3); err != nil {
+		t.Fatalf("valid forecast rejected: %v", err)
+	}
+	nan := mathNaN()
+	inf := mathInf()
+	for _, tc := range []struct {
+		name string
+		q    [][]float64
+	}{
+		{"too few days", [][]float64{{1, 2, 3}}},
+		{"wrong quantile count", [][]float64{{1, 2}, {1, 2}}},
+		{"badly inverted quantiles", [][]float64{{300, 2, 1}, {1, 2, 3}}},
+		{"NaN", [][]float64{{1, nan, 3}, {1, 2, 3}}},
+		{"Inf", [][]float64{{1, inf, 3}, {1, 2, 3}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := checkForecast(tc.q, 2, 3); err == nil {
+				t.Error("expected rejection, got none")
+			}
+		})
+	}
+}
+
+func TestParseFutureCountMustMatchHorizon(t *testing.T) {
+	if _, err := parseFuture("budget=1,2,3", 7); err == nil {
+		t.Error("3 values for a 7-day horizon should be rejected")
+	}
+	got, err := parseFuture("budget=1,2,3", 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got["budget"]) != 3 {
+		t.Errorf("got %v", got)
+	}
+}
+
+// Asking for one model and silently getting another is the worst failure this
+// tool could have, so the argument reordering that prevents it is tested.
+func TestFlagsAfterFilenameAreNotIgnored(t *testing.T) {
+	got := reorderFlags([]string{"data.csv", "-model", "timesfm3", "-horizon", "7"})
+	want := "-model timesfm3 -horizon 7 data.csv"
+	if strings.Join(got, " ") != want {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+	if g := reorderFlags([]string{"-model=chronos2", "a.csv"}); strings.Join(g, " ") != "-model=chronos2 a.csv" {
+		t.Errorf("equals form broken: %v", g)
+	}
+}
+
+func TestNextDays(t *testing.T) {
+	got, err := nextDays("2026-02-27", 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"2026-02-28", "2026-03-01", "2026-03-02"} // 2026 is not a leap year
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("day %d = %s, want %s", i, got[i], want[i])
+		}
+	}
+}
+
+func mathNaN() float64 { var z float64; return z / z }
+func mathInf() float64 { var z float64; return 1 / z }
+
+// --- Round 1 findings: real-world file quirks -------------------------------
+
+func TestExcelBOMIsStripped(t *testing.T) {
+	body := "\xef\xbb\xbf\"date\",\"spend\"\n" // UTF-8 BOM, as Excel writes it
+	for i := 0; i < 40; i++ {
+		body += fmt.Sprintf("%q,%q\n", day(i), fmt.Sprint(100+i))
+	}
+	d, err := readCSV(writeTemp(t, "bom.csv", body), nil, "")
+	if err != nil {
+		t.Fatalf("Excel's BOM must not break parsing: %v", err)
+	}
+	if len(d.Names) != 1 || d.Names[0] != "spend" {
+		t.Errorf("columns = %v, want [spend] (BOM leaked into the header?)", d.Names)
+	}
+}
+
+// 01/02/2026 is 1 February to most of the world and 2 January in the US. Picking
+// silently would move every observation by up to eleven months.
+func TestUndecidableDateOrderIsRefused(t *testing.T) {
+	body := "date,v\n"
+	for i := 1; i <= 12; i++ { // every component <= 12: nothing settles it
+		body += fmt.Sprintf("%02d/01/2026,%d\n", i, 100+i)
+	}
+	_, err := readCSV(writeTemp(t, "amb.csv", body), nil, "")
+	if err == nil {
+		t.Fatal("ambiguous day/month order must be refused, not guessed")
+	}
+	if !strings.Contains(err.Error(), "day/month or month/day") {
+		t.Errorf("error should explain the ambiguity, got: %v", err)
+	}
+}
+
+func TestDateOrderResolvedByTheFile(t *testing.T) {
+	for _, tc := range []struct{ name, layout string }{
+		{"day first", "02/01/2006"},
+		{"month first", "01/02/2006"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body := "date,v\n"
+			for i := 0; i < 40; i++ { // spans a 31st, which settles the order
+				d, _ := time.Parse("2006-01-02", day(i))
+				body += fmt.Sprintf("%s,%d\n", d.Format(tc.layout), 100+i)
+			}
+			got, err := readCSV(writeTemp(t, "d.csv", body), nil, "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.Days[0] != day(0) || got.Days[39] != day(39) {
+				t.Errorf("read %s..%s, want %s..%s",
+					got.Days[0], got.Days[39], day(0), day(39))
+			}
+		})
+	}
+}
+
+// --- Round 1 finding: the validator was rejecting valid forecasts ------------
+
+// The models compute in float32. On a smooth series adjacent quantiles collapse
+// to the same value and cross by a few hundred ULPs; that is noise, not an
+// inverted forecast. A fixed 1e-6 tolerance rejected real, correct output.
+// Both models predict each quantile independently, so mild crossing is expected.
+// It is corrected by sorting and reported, not treated as a failed forecast -- a
+// real 0.17% crossing was observed on a 10,000-day series.
+func TestSmallQuantileCrossingIsRepairedAndReported(t *testing.T) {
+	q := [][]float64{{10061.11, 10044.47, 10100.0}} // q30 above q40, as observed
+	worst, err := checkForecast(q, 1, 3)
+	if err != nil {
+		t.Fatalf("a normal crossing must not fail the forecast: %v", err)
+	}
+	if worst < 1e-4 {
+		t.Errorf("crossing should be reported, got %v", worst)
+	}
+	for j := 1; j < len(q[0]); j++ {
+		if q[0][j] < q[0][j-1] {
+			t.Fatalf("quantiles not sorted after repair: %v", q[0])
+		}
+	}
+}
+
+func TestAbsurdCrossingIsStillRefused(t *testing.T) {
+	// 50% out of order is not a model artefact, it is a broken forecast.
+	if _, err := checkForecast([][]float64{{200, 100, 300}}, 1, 3); err == nil {
+		t.Error("a 50% crossing must still be refused")
+	}
+}
+
+// Sorting must not disturb a forecast that was already in order.
+func TestCorrectForecastIsUnchanged(t *testing.T) {
+	q := [][]float64{{1.5, 2.5, 3.5}, {10, 20, 30}}
+	worst, err := checkForecast(q, 2, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if worst != 0 {
+		t.Errorf("no crossing expected, got %v", worst)
+	}
+	if q[0][0] != 1.5 || q[1][2] != 30 {
+		t.Errorf("values changed: %v", q)
+	}
+}
+
+// --- Round 3 finding: %.2f hid small values and printed negative zero --------
+
+func TestFormatValue(t *testing.T) {
+	for _, tc := range []struct {
+		in   float64
+		want string
+	}{
+		{0, "0"},
+		{math.Copysign(0, -1), "0"}, // models return negative zero
+		{1234.5678, "1234.57"},
+		{12.34567, "12.346"},
+		{0.000123456, "0.000123"},
+	} {
+		if got := formatValue(tc.in); got != tc.want {
+			t.Errorf("formatValue(%v) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+	if got := formatValue(6.00676e-08); !strings.Contains(got, "e-08") {
+		t.Errorf("tiny values must not print as 0.00, got %q", got)
+	}
+}
+
+// Naming a column twice silently kept the last one, discarding numbers the user typed.
+func TestDuplicateFutureColumnIsRefused(t *testing.T) {
+	if _, err := parseFuture("budget=1,2,3;budget=9,9,9", 3); err == nil {
+		t.Fatal("naming the same column twice must be refused")
+	}
+	if _, err := parseFuture("budget=1,2,3;promo=0,0,1", 3); err != nil {
+		t.Errorf("two different columns are fine: %v", err)
+	}
+}
+
+// --- Real exports are wide and messy: "Day, Campaign, Impressions, Clicks, Cost"
+
+func wideCSV(n int) string {
+	var b strings.Builder
+	b.WriteString("Day,Campaign,Impressions,Clicks,Cost\n")
+	for i := 0; i < n; i++ {
+		fmt.Fprintf(&b, "%s,Brand Search,%d,%d,%d.50\n", day(i), 40000+i, 600+i, 700+i)
+	}
+	return b.String()
+}
+
+// Taking column 2 on faith failed on the first real file anyone tried, because
+// column 2 is usually a campaign name.
+func TestTextColumnsAreSetAsideNotFatal(t *testing.T) {
+	d, err := readCSV(writeTemp(t, "w.csv", wideCSV(40)), nil, "")
+	if err != nil {
+		t.Fatalf("a wide export must not fail: %v", err)
+	}
+	if len(d.Names) != 3 || d.Names[0] != "Impressions" {
+		t.Errorf("numeric columns = %v, want [Impressions Clicks Cost]", d.Names)
+	}
+	if len(d.Skipped) != 1 || d.Skipped[0] != "Campaign" {
+		t.Errorf("Campaign should be set aside, got %v", d.Skipped)
+	}
+	if _, ok := d.Values[AccountEntity]["Cost"]; !ok {
+		t.Errorf("Cost should be available, got %v", d.Names)
+	}
+}
+
+func TestColumnsFlagPicksASubset(t *testing.T) {
+	d, err := readCSV(writeTemp(t, "w.csv", wideCSV(40)), []string{"Cost"}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(d.Names) != 1 || d.Names[0] != "Cost" {
+		t.Errorf("columns = %v, want [Cost]", d.Names)
+	}
+}
+
+func TestUnknownOrTextColumnIsRefusedWithOptions(t *testing.T) {
+	_, err := readCSV(writeTemp(t, "w.csv", wideCSV(40)), []string{"Costs"}, "")
+	if err == nil || !strings.Contains(err.Error(), "Impressions, Clicks, Cost") {
+		t.Errorf("a typo should list the real columns, got: %v", err)
+	}
+	_, err = readCSV(writeTemp(t, "w.csv", wideCSV(40)), []string{"Campaign"}, "")
+	if err == nil || !strings.Contains(err.Error(), "holds text, not numbers") {
+		t.Errorf("a text column should say why it cannot be forecast, got: %v", err)
+	}
+}
+
+// A single bad cell in an otherwise numeric column is a typo, and must still be
+// reported with its line -- not quietly reclassified as a text column.
+func TestOneBadCellStillNamesTheLine(t *testing.T) {
+	body := strings.Replace(wideCSV(40), day(3)+",Brand Search,40003", day(3)+",Brand Search,oops", 1)
+	_, err := readCSV(writeTemp(t, "w.csv", body), nil, "")
+	if err == nil {
+		t.Fatal("a bad cell must be an error")
+	}
+	if !strings.Contains(err.Error(), "line 5") {
+		t.Errorf("error should name the line, got: %v", err)
+	}
+}
+
+// --- Google Ads exports: one row per campaign per day ------------------------
+
+// campaignCSV is the shape a Google Ads campaign report arrives in: every day
+// repeated once per campaign, with text columns and an ID column alongside.
+func campaignCSV(days, campaigns int, pausedFrom int) string {
+	var b strings.Builder
+	b.WriteString("Day,Campaign status,Campaign,Budget,Cost,Impr.,Clicks,Campaign ID\n")
+	for i := 0; i < days; i++ {
+		for c := 0; c < campaigns; c++ {
+			status, cost, impr, clicks := "Enabled", 100+i+c*10, 5000+i*7, 200+i
+			if c >= pausedFrom {
+				status, cost, impr, clicks = "Paused", 0, 0, 0
+			}
+			fmt.Fprintf(&b, "%s,%s,Campaign %d,%d,%d,%d,%d,%d\n",
+				day(i), status, c, 50+c*10, cost, impr, clicks, 2000000000+c)
+		}
+	}
+	return b.String()
+}
+
+func TestCampaignExportSplitsByCampaign(t *testing.T) {
+	d, err := readCSV(writeTemp(t, "ads.csv", campaignCSV(40, 3, 3)), nil, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.RowsPerDay != 3 {
+		t.Errorf("rows per day = %d, want 3", d.RowsPerDay)
+	}
+	if d.GroupBy != "Campaign" {
+		t.Errorf("grouped by %q, want Campaign", d.GroupBy)
+	}
+	if len(d.Days) != 40 {
+		t.Errorf("got %d days, want 40 (rows must collapse to days)", len(d.Days))
+	}
+	if len(d.Entities) != 4 { // account + 3 campaigns
+		t.Errorf("entities = %v, want the account plus 3 campaigns", d.Entities)
+	}
+	if d.Entities[0] != AccountEntity {
+		t.Errorf("first entity = %q, want %q", d.Entities[0], AccountEntity)
+	}
+	if len(d.Raw) != 120 {
+		t.Errorf("kept %d raw rows, want 120", len(d.Raw))
+	}
+}
+
+// Campaign ID is numeric, but adding fifteen of them together is meaningless.
+func TestIdentifierColumnIsNotForecast(t *testing.T) {
+	d, err := readCSV(writeTemp(t, "ads.csv", campaignCSV(40, 3, 3)), nil, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, n := range d.Names {
+		if n == "Campaign ID" {
+			t.Fatal("Campaign ID must not be forecast")
+		}
+	}
+	if len(d.Identifiers) != 1 || d.Identifiers[0] != "Campaign ID" {
+		t.Errorf("identifiers = %v, want [Campaign ID]", d.Identifiers)
+	}
+}
+
+// The account total must be the sum of the campaigns, day by day.
+func TestAccountIsTheSumOfCampaigns(t *testing.T) {
+	d, err := readCSV(writeTemp(t, "ads.csv", campaignCSV(40, 3, 3)), nil, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, metric := range d.Names {
+		for i := range d.Days {
+			sum := 0.0
+			for _, e := range d.Entities {
+				if e != AccountEntity {
+					sum += d.Values[e][metric][i]
+				}
+			}
+			if got := d.Values[AccountEntity][metric][i]; math.Abs(got-sum) > 1e-9 {
+				t.Fatalf("%s on %s: account %v, campaigns sum to %v",
+					metric, d.Days[i], got, sum)
+			}
+		}
+	}
+}
+
+// A paused campaign never changes, so there is nothing to forecast. It must be
+// named, kept in the data, and left out of the model calls.
+func TestUnchangingCampaignsAreNotForecast(t *testing.T) {
+	d, err := readCSV(writeTemp(t, "ads.csv", campaignCSV(40, 4, 2)), nil, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(d.Inactive) != 2 {
+		t.Errorf("inactive = %v, want the 2 paused campaigns", d.Inactive)
+	}
+	for _, e := range d.Entities {
+		for _, dead := range d.Inactive {
+			if e == dead {
+				t.Errorf("%q has no activity and must not be forecast", e)
+			}
+		}
+	}
+	// still stored, just not forecast
+	for _, dead := range d.Inactive {
+		if _, ok := d.Values[dead]; !ok {
+			t.Errorf("%q was dropped; it should still be stored", dead)
+		}
+	}
+}
+
+// A rate is a real series and is forecast like any other. What it is not is
+// addable: fifteen campaigns' click-through rates do not sum to the account's,
+// so the account figure is their mean.
+func TestRatioColumnsAreForecastButAveragedNotSummed(t *testing.T) {
+	body := strings.Replace(campaignCSV(40, 3, 3), "Clicks,Campaign ID", "Clicks,CTR,Campaign ID", 1)
+	lines := strings.Split(strings.TrimSpace(body), "\n")
+	for i := 1; i < len(lines); i++ {
+		p := strings.Split(lines[i], ",")
+		lines[i] = strings.Join(append(p[:7:7], "4.00%", p[7]), ",")
+	}
+	d, err := readCSV(writeTemp(t, "ads.csv", strings.Join(lines, "\n")+"\n"), nil, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slicesContainsFold(d.Names, "CTR") {
+		t.Fatalf("CTR must be forecast, got %v", d.Names)
+	}
+	if !d.Percent["CTR"] {
+		t.Error("CTR was written with a %% sign and should be marked as a percentage")
+	}
+	// three campaigns all at 4.00%: the account is 4.00%, not 12.00%
+	if got := d.Values[AccountEntity]["CTR"][0]; math.Abs(got-4.0) > 1e-9 {
+		t.Errorf("account CTR = %v, want 4 (the mean), not 12 (the sum)", got)
+	}
+	if !slicesContainsFold(d.Averaged, "CTR") {
+		t.Errorf("CTR should be listed as averaged, got %v", d.Averaged)
+	}
+}
+
+// A percentage is a number. Reading "4.20%" as text dropped the column entirely.
+func TestPercentagesAreNumbers(t *testing.T) {
+	var b strings.Builder
+	b.WriteString("date,Cost,CTR\n")
+	for i := 0; i < 40; i++ {
+		fmt.Fprintf(&b, "%s,%d,%.2f%%\n", day(i), 100+i, 4.2+float64(i)*0.01)
+	}
+	d, err := readCSV(writeTemp(t, "p.csv", b.String()), nil, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slicesContainsFold(d.Names, "CTR") {
+		t.Fatalf("CTR must be a forecastable number, got names=%v skipped=%v", d.Names, d.Skipped)
+	}
+	// kept as written, so the report can put the sign back unchanged
+	if got := d.Values[AccountEntity]["CTR"][0]; math.Abs(got-4.2) > 1e-9 {
+		t.Errorf("CTR[0] = %v, want 4.2 as written", got)
+	}
+	if !d.Percent["CTR"] {
+		t.Error("CTR should be marked as a percentage")
+	}
+	if formatMetric(4.2, true) != "4.200%" {
+		t.Errorf("formatMetric = %q, want the sign back", formatMetric(4.2, true))
+	}
+}
+
+// A budget is a dial you turn, not an outcome you measure. Forecasting it just
+// replays the number you set -- seven days of 5877.00 on the real file.
+func TestSettingsAreStoredButNotForecast(t *testing.T) {
+	d, err := readCSV(writeTemp(t, "ads.csv", campaignCSV(40, 3, 3)), nil, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if slicesContainsFold(d.Names, "Budget") {
+		t.Error("Budget must not be forecast")
+	}
+	if !slicesContainsFold(d.Settings, "Budget") {
+		t.Errorf("Budget should be listed as a setting, got %v", d.Settings)
+	}
+	// still kept, for the record
+	if _, ok := d.Values[AccountEntity]["Budget"]; !ok {
+		t.Error("Budget must still be stored")
+	}
+	if got := len(d.Values[AccountEntity]["Budget"]); got != len(d.Days) {
+		t.Errorf("Budget has %d values, want %d", got, len(d.Days))
+	}
+}
+
+// Cost per acquisition is cost divided by conversions: an outcome, not a dial.
+func TestCPAIsNotTreatedAsASetting(t *testing.T) {
+	for _, name := range []string{"CPA", "Cost / conv.", "New customer CPA"} {
+		if looksLikeSetting(name) {
+			t.Errorf("%q is an outcome and must be forecast, not treated as a setting", name)
+		}
+	}
+	for _, name := range []string{"Budget", "Daily budget", "Target CPA", "Max CPC bid"} {
+		if !looksLikeSetting(name) {
+			t.Errorf("%q is something you set and must not be forecast", name)
+		}
+	}
+}
+
+// A single-row-per-day file must behave exactly as before.
+func TestPlainDailyFileStillHasOneEntity(t *testing.T) {
+	d, err := readCSV(writeTemp(t, "d.csv", goodCSV(40)), nil, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.RowsPerDay != 1 || d.GroupBy != "" {
+		t.Errorf("rows/day=%d groupBy=%q, want 1 and empty", d.RowsPerDay, d.GroupBy)
+	}
+	if len(d.Entities) != 1 || d.Entities[0] != AccountEntity {
+		t.Errorf("entities = %v, want just the account", d.Entities)
+	}
+}
+
+// A campaign actually called "(account)" would be folded into the total and
+// disappear. Refused rather than quietly lost.
+func TestCampaignNamedLikeTheAccountIsRefused(t *testing.T) {
+	var b strings.Builder
+	b.WriteString("Day,Campaign,Cost\n")
+	for i := 0; i < 40; i++ {
+		fmt.Fprintf(&b, "%s,%s,%d\n%s,Brand,%d\n", day(i), AccountEntity, 100+i, day(i), 50+i)
+	}
+	_, err := readCSV(writeTemp(t, "c.csv", b.String()), nil, "")
+	if err == nil {
+		t.Fatal("a campaign named like the account total must be refused")
+	}
+	if !strings.Contains(err.Error(), AccountEntity) {
+		t.Errorf("the error should name the clash, got: %v", err)
+	}
+}
+
+// Campaign names routinely contain commas -- "Video Efficient Reach, Infeed,
+// 9-16-25, CPM" is real -- so -entities is separated by semicolons.
+func TestEntitySelectionSurvivesCommasInNames(t *testing.T) {
+	got := splitOn("Video Efficient Reach, Infeed, 9-16-25, CPM; Brand", ";")
+	if len(got) != 2 {
+		t.Fatalf("got %d entities, want 2: %q", len(got), got)
+	}
+	if got[0] != "Video Efficient Reach, Infeed, 9-16-25, CPM" {
+		t.Errorf("first entity = %q, the commas should have survived", got[0])
+	}
+	if got[1] != "Brand" {
+		t.Errorf("second entity = %q", got[1])
+	}
+	// -columns and -future still split on commas
+	if len(splitList("a,b,c")) != 3 {
+		t.Error("comma splitting is still needed for -columns")
+	}
+}
+
+// Every column in a real Google Ads export must land in the right bucket.
+// "Max CPC bid" ends in "id" and was read as an identifier, which stopped the
+// settings rule from ever seeing it.
+func TestColumnClassification(t *testing.T) {
+	for _, tc := range []struct{ name, want string }{
+		{"Cost", "forecast"}, {"Impr.", "forecast"}, {"Clicks", "forecast"},
+		{"Conversions", "forecast"}, {"Conv. value", "forecast"}, {"Revenue", "forecast"},
+		{"CPA", "forecast"}, {"Cost / conv.", "forecast"}, {"New customer CPA", "forecast"},
+
+		{"Budget", "setting"}, {"Daily budget", "setting"}, {"Target CPA", "setting"},
+		{"Target ROAS", "setting"}, {"Max CPC bid", "setting"},
+
+		{"Campaign ID", "identifier"}, {"Customer ID", "identifier"},
+		{"Ad group ID", "identifier"}, {"Currency code", "identifier"},
+
+		{"CTR", "rate"}, {"Conv. rate", "rate"}, {"Avg. CPC", "rate"},
+		{"Search impr. share", "rate"},
+	} {
+		got := "forecast"
+		switch {
+		case looksLikeIdentifier(tc.name):
+			got = "identifier"
+		case looksLikeSetting(tc.name):
+			got = "setting"
+		case looksLikeRatio(tc.name):
+			got = "rate"
+		}
+		if got != tc.want {
+			t.Errorf("%-20q -> %s, want %s", tc.name, got, tc.want)
+		}
+	}
+}
+
+// Three models, and adding the third required exactly one line of Go.
+func TestThreeModelsRegistered(t *testing.T) {
+	for _, want := range []string{"timesfm3", "chronos2", "chronos2ft"} {
+		if _, ok := models[want]; !ok {
+			t.Errorf("model %q is not registered", want)
+		}
+	}
+	if len(models) != 3 {
+		t.Errorf("registered models = %v, want exactly 3", modelNames())
+	}
+	// worker file names must not shadow a Python package
+	for name, path := range models {
+		if !strings.HasSuffix(path, "_worker.py") {
+			t.Errorf("%s -> %s: workers must end in _worker.py so they cannot shadow "+
+				"an installed package", name, path)
+		}
+	}
+}
+
+// A budget is a setting, so it is never forecast -- and it is also the textbook
+// known-future value, because you chose next week's yourself. Classifying it as
+// a setting must not stop -future accepting it.
+func TestSettingsCanBeUsedAsKnownFutureInputs(t *testing.T) {
+	var b strings.Builder
+	b.WriteString("date,spend,Budget\n")
+	for i := 0; i < 40; i++ {
+		fmt.Fprintf(&b, "%s,%d,%d\n", day(i), 400+i, 500)
+	}
+	d, err := readCSV(writeTemp(t, "b.csv", b.String()), nil, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if slicesContainsFold(d.Names, "Budget") {
+		t.Fatal("Budget should not be forecastable")
+	}
+	// but it must be present as a stored numeric column, which is what -future
+	// validates against
+	if _, ok := d.Values[AccountEntity]["Budget"]; !ok {
+		t.Error("Budget must still be available as a known-future input")
+	}
+	if len(d.Values[AccountEntity]["Budget"]) != len(d.Days) {
+		t.Error("Budget history must be full length for use as a covariate")
+	}
+}
+
+// A fine-tuned adapter is registered by a path relative to models/, so moving
+// the project does not break it -- and so it is never shipped with an absolute
+// path baked in.
+func TestFinetunedAdapterPathIsRelative(t *testing.T) {
+	b, err := os.ReadFile(filepath.Join("models", "finetuned.json"))
+	if err != nil {
+		t.Skip("no fine-tuned model registered")
+	}
+	var reg map[string]struct {
+		Path string `json:"path"`
+	}
+	if err := json.Unmarshal(b, &reg); err != nil {
+		t.Fatal(err)
+	}
+	for name, m := range reg {
+		if filepath.IsAbs(m.Path) {
+			t.Errorf("%s path %q is absolute; it will break when the project moves",
+				name, m.Path)
+		}
+	}
+}
+
+// The adapter is fitted to one person's numbers and registered on their machine.
+// Sending it to someone else gives them a broken or wrong model.
+func TestShareScriptExcludesTheAdapter(t *testing.T) {
+	b, err := os.ReadFile("share.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(b)
+	for _, want := range []string{"models/finetuned", "models/finetuned.json"} {
+		if !strings.Contains(s, "--exclude='"+want+"'") {
+			t.Errorf("share.sh must exclude %s", want)
+		}
+	}
+	// but the means to train one must travel
+	if strings.Contains(s, "--exclude='models/finetune.py'") {
+		t.Error("finetune.py must be shared so the recipient can train their own")
+	}
+}

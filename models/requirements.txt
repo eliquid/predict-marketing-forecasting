@@ -1,0 +1,9 @@
+# Pinned. These exact versions were verified working together on 2026-09-20.
+torch==2.14.0
+numpy==2.4.6
+timesfm==3.0.2
+chronos-forecasting==2.3.2
+huggingface-hub==1.32.0
+# needed only by models/finetune.py (LoRA fine-tuning)
+peft==0.21.0
+accelerate==1.15.0
