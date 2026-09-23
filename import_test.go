@@ -440,3 +440,32 @@ func TestDefaultsAnchorToTheInstallNotTheShell(t *testing.T) {
 		t.Errorf("the default database moved with the shell: %q then %q", before, after)
 	}
 }
+
+// finetune.py once took a --budget wall clock, and import passed 600 seconds. On
+// a real export that ended training at step 1,210 of 2,000 -- 0.605 of an epoch
+// -- and the adapter then appeared in every report as a peer of the pretrained
+// models with nothing saying it had been cut short. Nobody asked for that limit.
+// If training is too slow the honest lever is --steps.
+func TestTrainingIsNeverTimeLimited(t *testing.T) {
+	py, err := os.ReadFile(filepath.Join("models", "finetune.py"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, gone := range []string{"--budget", "hit_time_budget", "should_training_stop"} {
+		if strings.Contains(string(py), gone) {
+			t.Errorf("finetune.py still contains %q: training must run every step it "+
+				"was asked for", gone)
+		}
+	}
+
+	src, err := os.ReadFile("import.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(src), "--budget") {
+		t.Error("import.go passes a time budget to the trainer")
+	}
+	if !strings.Contains(string(src), `"--steps"`) {
+		t.Error("import.go no longer tells the trainer how many steps to run")
+	}
+}

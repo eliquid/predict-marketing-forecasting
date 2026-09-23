@@ -77,6 +77,12 @@ Several things moved, so older notes may mislead:
   forecast history across databases and `accuracy` silently loses it.
 - **Reports are written to `data/reports/`**, never beside the export: `data/`
   has to show at a glance what is still waiting to be read.
+- **Never put a time limit on training.** A `--budget` wall clock silently cut a
+  real run to 1,210 of 2,000 steps and the resulting adapter looked finished in
+  every report. Removed everywhere; lower `--steps` instead (`AGENTS.md` §2c).
+- **The comparison chart is fixed-width inside a scroller, not scaled to fit.**
+  That is what makes the crosshair possible; scaling it would break the
+  coordinate mapping (`AGENTS.md` §2c).
 - **`import` is the recurring job now** (`AGENTS.md` §2c): `data/` in,
   two comparison reports out, CSV filed into `data/imported/`. It refuses under
   90 days. `forecast` is still the single-model command underneath it.

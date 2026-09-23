@@ -75,6 +75,9 @@ type chartPane struct {
 	Entity string
 	Metric string
 	Chart  template.HTML
+	// Data is the same series as JSON, so the crosshair can read values without
+	// parsing the drawing back out of the SVG.
+	Data   template.JS
 	Totals []statCard
 	Rows   []compareRow
 	Header []string // "day" then one column per model
@@ -176,7 +179,7 @@ func writeComparison(path string, runs []forecastRun, data *Data, days []string,
 				continue
 			}
 			pct := data.Percent[metric]
-			pane.Chart = drawCompareChart(data.Series(entity, metric), days, lines, historyDays)
+			pane.Chart, pane.Data = drawCompareChart(data.Series(entity, metric), days, lines, historyDays)
 
 			// What actually happened over the window the chart draws, then what
 			// each model expects over the days ahead, on the same footing.
@@ -301,29 +304,47 @@ func sharedMetrics(runs []forecastRun) []string {
 
 // drawCompareChart draws the history once and every model's median over it.
 //
-// Laid out like a trading chart rather than a textbook one: value labels on the
-// right where the lines end, the divider between observed and forecast called
-// out in the plot, and each line named where it finishes instead of only in a
-// legend. With three models a legend alone means counting colours back and
-// forth; a label at the end of the line does not.
+// Forecast days are drawn several times wider than history days. The forecast is
+// the reason the page exists and it is the shortest part of the series, so given
+// equal spacing it ends up a few pixels wide at the right-hand edge with every
+// line and label piled on top of the others. Stretching it costs nothing -- the
+// history is still all there, to the left, and the chart scrolls.
 //
-// No uncertainty bands: three overlapping translucent bands turn the plot to
-// mud, and the question this chart answers is whether the models agree, which
-// the lines show directly.
-func drawCompareChart(history []Point, days []string, lines []modelLine, show int) template.HTML {
-	const w, h = 1000.0, 380.0
-	const padL, padR, padT, padB = 16.0, 104.0, 26.0, 46.0
+// The SVG is emitted at a fixed pixel width rather than scaled to the container,
+// so screen coordinates and chart coordinates are the same thing. That is what
+// lets the crosshair in the template find the day under the pointer without
+// re-deriving the projection in JavaScript.
+func drawCompareChart(history []Point, days []string, lines []modelLine, show int) (template.HTML, template.JS) {
+	const (
+		histPx                 = 9.0  // one day of history
+		fcPx                   = 46.0 // one day of forecast: this is what you came to look at
+		h                      = 430.0
+		padL, padR, padT, padB = 18.0, 108.0, 28.0, 48.0
+	)
 
-	if show <= 0 {
-		show = 90
-	}
-	if len(history) > show {
+	// show <= 0 means draw everything. The chart scrolls, so more history costs
+	// width rather than legibility, and the point of scrolling back is being able
+	// to go as far back as the data goes.
+	if show > 0 && len(history) > show {
 		history = history[len(history)-show:]
 	}
 	n := len(history) + len(days)
 	if n < 2 || len(lines) == 0 {
-		return ""
+		return "", ""
 	}
+
+	// x for every index, history compressed and forecast stretched.
+	xs := make([]float64, n)
+	at := padL
+	for i := range xs {
+		xs[i] = at
+		if i < len(history)-1 {
+			at += histPx
+		} else {
+			at += fcPx
+		}
+	}
+	w := xs[n-1] + padR
 
 	lo, hi := math.Inf(1), math.Inf(-1)
 	for _, p := range history {
@@ -335,13 +356,13 @@ func drawCompareChart(history []Point, days []string, lines []modelLine, show in
 		}
 	}
 	if math.IsInf(lo, 0) || math.IsInf(hi, 0) {
-		return ""
+		return "", ""
 	}
 	if hi <= lo {
 		hi = lo + 1
 	}
-	// Start the scale at zero when the data is all positive: a spend chart that
-	// does not is a chart that exaggerates every wobble.
+	// Start at zero when everything is positive: a spend chart that does not is a
+	// chart that exaggerates every wobble.
 	if lo > 0 && lo < hi*0.6 {
 		lo = 0
 	}
@@ -350,14 +371,12 @@ func drawCompareChart(history []Point, days []string, lines []modelLine, show in
 	if lo != 0 {
 		lo -= pad
 	}
-
-	x := func(i int) float64 { return padL + (w-padL-padR)*float64(i)/float64(n-1) }
 	y := func(v float64) float64 { return padT + (h-padT-padB)*(1-(v-lo)/(hi-lo)) }
 
 	var b strings.Builder
-	fmt.Fprintf(&b, `<svg viewBox="0 0 %g %g" class="chart" role="img" aria-label="forecast comparison">`, w, h)
+	fmt.Fprintf(&b, `<svg width="%g" height="%g" viewBox="0 0 %g %g" class="chart" `+
+		`role="img" aria-label="forecast comparison">`, w, h, w, h)
 
-	// gridlines, with the value written at the right-hand end of each
 	for i := 0; i <= 4; i++ {
 		v := lo + (hi-lo)*float64(i)/4
 		yy := y(v)
@@ -365,41 +384,36 @@ func drawCompareChart(history []Point, days []string, lines []modelLine, show in
 		fmt.Fprintf(&b, `<text x="%g" y="%g" class="ylab">%s</text>`, w-padR+12, yy+4, compact(v))
 	}
 
-	// day numbers along the bottom, thinned so they never collide
+	// Date labels: sparse over the history, every day over the forecast, where
+	// there is room and where they matter.
 	step := 1
-	for n/step > 14 {
+	for len(history)/step > 12 {
 		step++
 	}
-	for i := 0; i < n; i += step {
-		var label string
-		if i < len(history) {
-			label = dayNumber(history[i].Day)
-		} else {
-			label = dayNumber(days[i-len(history)])
-		}
-		fmt.Fprintf(&b, `<text x="%g" y="%g" class="xlab">%s</text>`, x(i), h-padB+22, label)
+	for i := 0; i < len(history); i += step {
+		fmt.Fprintf(&b, `<text x="%g" y="%g" class="xlab">%s</text>`,
+			xs[i], h-padB+22, shortDay(history[i].Day))
+	}
+	for i, d := range days {
+		fmt.Fprintf(&b, `<text x="%g" y="%g" class="xlab fc">%s</text>`,
+			xs[len(history)+i], h-padB+22, shortDay(d))
 	}
 
-	// what actually happened
+	// the forecast region, shaded so the eye lands on it
+	if len(history) > 0 {
+		xd := xs[len(history)-1]
+		fmt.Fprintf(&b, `<rect x="%g" y="%g" width="%g" height="%g" class="fcband"/>`,
+			xd, padT-8, w-padR-xd, h-padB-padT+8)
+		fmt.Fprintf(&b, `<line x1="%g" y1="%g" x2="%g" y2="%g" class="split"/>`, xd, padT-8, xd, h-padB)
+		fmt.Fprintf(&b, `<text x="%g" y="%g" class="split-label">forecast from here</text>`, xd+9, padT+4)
+	}
+
 	b.WriteString(`<polyline class="hist" points="`)
 	for i, p := range history {
-		fmt.Fprintf(&b, "%g,%g ", x(i), y(p.Value))
+		fmt.Fprintf(&b, "%g,%g ", xs[i], y(p.Value))
 	}
 	b.WriteString(`"/>`)
-	if len(history) > 2 {
-		fmt.Fprintf(&b, `<text x="%g" y="%g" class="inline-label hist-label">actual</text>`,
-			x(len(history)/2), y(hi)+16)
-	}
 
-	// the divider, and what it means
-	if len(history) > 0 {
-		xd := x(len(history) - 1)
-		fmt.Fprintf(&b, `<line x1="%g" y1="%g" x2="%g" y2="%g" class="split"/>`, xd, padT-6, xd, h-padB)
-		fmt.Fprintf(&b, `<text x="%g" y="%g" class="split-label">last day of data</text>`, xd+8, padT+6)
-	}
-
-	// one line per model, joined to the last real observation so the eye follows
-	// it out of the history rather than starting it in mid-air
 	var ends []lineEnd
 	for li, ln := range lines {
 		dash := ""
@@ -409,29 +423,92 @@ func drawCompareChart(history []Point, days []string, lines []modelLine, show in
 		fmt.Fprintf(&b, `<polyline fill="none" stroke="%s" stroke-width="2.5" `+
 			`stroke-linejoin="round" stroke-linecap="round"%s points="`, ln.Colour, dash)
 		if len(history) > 0 {
-			fmt.Fprintf(&b, "%g,%g ", x(len(history)-1), y(history[len(history)-1].Value))
+			fmt.Fprintf(&b, "%g,%g ", xs[len(history)-1], y(history[len(history)-1].Value))
 		}
 		for i, v := range ln.Median {
-			fmt.Fprintf(&b, "%g,%g ", x(len(history)+i), y(v))
+			fmt.Fprintf(&b, "%g,%g ", xs[len(history)+i], y(v))
+			fmt.Fprintf(&b, `" /><circle cx="%g" cy="%g" r="3" fill="%s"/><polyline fill="none" `+
+				`stroke="%s" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"%s points="`,
+				xs[len(history)+i], y(v), ln.Colour, ln.Colour, dash)
+			fmt.Fprintf(&b, "%g,%g ", xs[len(history)+i], y(v))
 		}
 		b.WriteString(`"/>`)
 
 		if len(ln.Median) > 0 {
-			ex, ey := x(n-1), y(ln.Median[len(ln.Median)-1])
-			fmt.Fprintf(&b, `<circle cx="%g" cy="%g" r="4" fill="%s"/>`, ex, ey, ln.Colour)
+			ex, ey := xs[n-1], y(ln.Median[len(ln.Median)-1])
 			ends = append(ends, lineEnd{x: ex, y: ey, colour: ln.Colour, name: ln.Model})
 		}
 	}
-
-	// Models that finish close together would print their names on top of each
-	// other, which is worst exactly when it matters most -- when they agree.
-	for _, e := range spreadLabels(ends, 15, padT, h-padB) {
+	for _, e := range spreadLabels(ends, 17, padT, h-padB) {
 		fmt.Fprintf(&b, `<text x="%g" y="%g" class="inline-label" fill="%s">%s</text>`,
-			e.x-9, e.labelY, e.colour, template.HTMLEscapeString(e.name))
+			e.x+8, e.labelY, e.colour, template.HTMLEscapeString(e.name))
 	}
 
+	// The crosshair layer is drawn by the page; it needs somewhere to put it.
+	fmt.Fprintf(&b, `<g class="cross" style="display:none">`+
+		`<line class="cross-v" y1="%g" y2="%g"/></g>`, padT-8, h-padB)
 	b.WriteString(`</svg>`)
-	return template.HTML(b.String())
+
+	// Everything the crosshair needs, so the projection is never re-derived.
+	var j strings.Builder
+	j.WriteString(`{"xs":[`)
+	for i, v := range xs {
+		if i > 0 {
+			j.WriteByte(',')
+		}
+		fmt.Fprintf(&j, "%.1f", v)
+	}
+	j.WriteString(`],"days":[`)
+	for i, p := range history {
+		if i > 0 {
+			j.WriteByte(',')
+		}
+		fmt.Fprintf(&j, "%q", p.Day)
+	}
+	for _, d := range days {
+		fmt.Fprintf(&j, ",%q", d)
+	}
+	j.WriteString(`],"actual":[`)
+	for i, p := range history {
+		if i > 0 {
+			j.WriteByte(',')
+		}
+		fmt.Fprintf(&j, "%.4f", p.Value)
+	}
+	j.WriteString(`],"cut":`)
+	fmt.Fprintf(&j, "%d", len(history))
+	j.WriteString(`,"lines":[`)
+	for li, ln := range lines {
+		if li > 0 {
+			j.WriteByte(',')
+		}
+		fmt.Fprintf(&j, `{"model":%q,"colour":%q,"values":[`, ln.Model, ln.Colour)
+		for i, v := range ln.Median {
+			if i > 0 {
+				j.WriteByte(',')
+			}
+			fmt.Fprintf(&j, "%.4f", v)
+		}
+		j.WriteString(`]}`)
+	}
+	j.WriteString(`]}`)
+
+	return template.HTML(b.String()), template.JS(j.String())
+}
+
+// shortDay is "Mar 05", which fits under a dense axis and still says the month.
+func shortDay(day string) string {
+	if len(day) < 10 {
+		return day
+	}
+	months := []string{"", "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+		"Jul", "Aug", "Sep", "Oct", "Nov", "Dec"}
+	m := 0
+	fmt.Sscanf(day[5:7], "%d", &m)
+	if m < 1 || m > 12 {
+		return day
+	}
+	return months[m] + " " + day[8:10]
 }
 
 // dashFor gives each model after the first its own dash pattern, so the lines

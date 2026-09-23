@@ -73,7 +73,24 @@ var compareTmpl = template.Must(template.New("compare").Parse(`<!doctype html>
           padding:16px 16px 10px; margin-bottom:16px; }
   .plot .cap { font-size:10.5px; letter-spacing:.13em; text-transform:uppercase;
                color:var(--muted); margin-bottom:6px; }
-  .chart { width:100%; height:auto; display:block; }
+  .scroller { overflow-x:auto; overflow-y:hidden; position:relative;
+              scrollbar-color:var(--faint) var(--panel2); }
+  .scroller::-webkit-scrollbar { height:12px; }
+  .scroller::-webkit-scrollbar-track { background:var(--panel2); border-radius:6px; }
+  .scroller::-webkit-scrollbar-thumb { background:var(--faint); border-radius:6px; }
+  .chart { display:block; }
+  .fcband { fill:#ffffff06; }
+  .cross-v { stroke:var(--accent); stroke-width:1; stroke-dasharray:3 3; }
+  .readout { position:absolute; top:10px; pointer-events:none; z-index:3;
+             background:var(--panel2); border:1px solid var(--accent);
+             border-radius:5px; padding:9px 12px; font-size:12px;
+             white-space:nowrap; box-shadow:0 6px 22px #0008; display:none; }
+  .readout .rday { color:var(--muted); font-size:10.5px; letter-spacing:.11em;
+                   text-transform:uppercase; margin-bottom:6px; }
+  .readout .rrow { display:flex; gap:10px; justify-content:space-between; }
+  .readout .rname { display:inline-flex; align-items:center; gap:7px; }
+  .readout .rval { font-weight:700; }
+  .hint { color:var(--faint); font-size:11px; margin:6px 0 0; }
   .grid  { stroke:var(--line); stroke-width:1; }
   .hist  { fill:none; stroke:var(--hist); stroke-width:2; stroke-linejoin:round; }
   .split { stroke:var(--faint); stroke-width:1; stroke-dasharray:3 4; }
@@ -153,7 +170,12 @@ var compareTmpl = template.Must(template.New("compare").Parse(`<!doctype html>
     </div>
     <div class="plot">
       <div class="cap">{{.Entity}} · {{.Metric}}</div>
-      {{.Chart}}
+      <div class="scroller">
+        {{.Chart}}
+        <div class="readout"></div>
+      </div>
+      <p class="hint">Move across the chart to read every model at one day · scroll left for older days</p>
+      <script type="application/json" class="pane-data">{{.Data}}</script>
     </div>
     <table>
       <thead><tr>{{range .Header}}<th>{{.}}</th>{{end}}</tr></thead>
@@ -233,6 +255,87 @@ var compareTmpl = template.Must(template.New("compare").Parse(`<!doctype html>
   entity.addEventListener('change', refreshMetrics);
   metric.addEventListener('change', show);
   refreshMetrics();
+
+  // Crosshair. The chart is drawn at a fixed pixel width, so a pointer position
+  // inside the svg is already a chart coordinate -- no projection to redo here,
+  // which is the whole reason the x of every day is handed over in the JSON.
+  function money(v) {
+    var a = Math.abs(v);
+    if (a >= 1000) return v.toLocaleString(undefined, {maximumFractionDigits: 0});
+    if (a >= 1)    return v.toFixed(2);
+    return v.toPrecision(3);
+  }
+
+  panes.forEach(function (pane) {
+    var holder = pane.querySelector('.pane-data');
+    var svg    = pane.querySelector('svg.chart');
+    var box    = pane.querySelector('.readout');
+    var scr    = pane.querySelector('.scroller');
+    if (!holder || !svg || !box || !scr) return;
+
+    var d;
+    try { d = JSON.parse(holder.textContent); } catch (e) { return; }
+    if (!d.xs || !d.xs.length) return;
+
+    var cross = svg.querySelector('.cross');
+    var vline = svg.querySelector('.cross-v');
+
+    function nearest(x) {
+      var best = 0, gap = Infinity;
+      for (var i = 0; i < d.xs.length; i++) {
+        var g = Math.abs(d.xs[i] - x);
+        if (g < gap) { gap = g; best = i; }
+      }
+      return best;
+    }
+
+    function render(i) {
+      var rows = '<div class="rday">' + d.days[i] + '</div>';
+      if (i < d.cut) {
+        rows += '<div class="rrow"><span class="rname">' +
+                '<i class="swatch" style="border-top-color:var(--hist)"></i>actual</span>' +
+                '<span class="rval">' + money(d.actual[i]) + '</span></div>';
+      } else {
+        var k = i - d.cut;
+        d.lines.forEach(function (ln) {
+          if (k >= ln.values.length) return;
+          rows += '<div class="rrow"><span class="rname">' +
+                  '<i class="swatch" style="border-top-color:' + ln.colour + '"></i>' +
+                  ln.model + '</span><span class="rval">' + money(ln.values[k]) + '</span></div>';
+        });
+      }
+      box.innerHTML = rows;
+      box.style.display = 'block';
+
+      // keep the readout beside the crosshair and inside the visible strip
+      var left = d.xs[i] - scr.scrollLeft + 16;
+      if (left + box.offsetWidth > scr.clientWidth - 8) {
+        left = d.xs[i] - scr.scrollLeft - box.offsetWidth - 16;
+      }
+      box.style.left = Math.max(8, left) + 'px';
+
+      vline.setAttribute('x1', d.xs[i]);
+      vline.setAttribute('x2', d.xs[i]);
+      cross.style.display = '';
+    }
+
+    function fromEvent(ev) {
+      var r = svg.getBoundingClientRect();
+      var x = (ev.touches ? ev.touches[0].clientX : ev.clientX) - r.left;
+      render(nearest(x * (svg.viewBox.baseVal.width / r.width)));
+    }
+
+    svg.addEventListener('mousemove', fromEvent);
+    svg.addEventListener('touchmove', fromEvent, {passive: true});
+    svg.addEventListener('mouseleave', function () {
+      box.style.display = 'none';
+      cross.style.display = 'none';
+    });
+
+    // Open on the forecast, which is what the page is for, and leave the
+    // history one scroll to the left.
+    requestAnimationFrame(function () { scr.scrollLeft = scr.scrollWidth; });
+  });
 })();
 </script>
 </body>

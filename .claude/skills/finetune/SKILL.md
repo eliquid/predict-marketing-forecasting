@@ -19,13 +19,17 @@ running a whole import.
 ## Train
 
 ```bash
-models/.venv/bin/python models/finetune.py "Campaign report.csv" \
-    --steps 2000 --budget 600
+models/.venv/bin/python models/finetune.py "Campaign report.csv" --steps 2000
 ```
 
-`--budget` is a wall-clock hard stop in seconds; training ends there whatever the
-step count. At ~3 steps/sec, 600s is roughly 1,800 steps. Writes
-`models/finetuned/chronos2ft/` (4.9 MB) and `models/finetuned.json`.
+`--steps` is the whole instruction and it runs all of them. **There is no time
+limit, and there must not be one.** A clock that ended training early left an
+adapter that was undertrained but looked finished everywhere it was used -- the
+registry said `steps: 1210`, and nothing else did. How long it takes is a
+property of how much data you have; on a two-year, fourteen-campaign export it
+was about 17 minutes.
+
+Writes `models/finetuned/chronos2ft/` (4.9 MB) and `models/finetuned.json`.
 
 Then it is just another model:
 
@@ -81,7 +85,7 @@ Recipients train their own from the same `models/finetune.py`.
 
 | Message | Cause |
 |---|---|
-| `no fine-tuned model yet` | nothing trained; run `finetune.py` |
+| `no fine-tuned model yet` | nothing trained; run `models/finetune.py` |
 | `the adapter on disk is not the one that was trained` | the file changed since training; retrain |
 | `models/finetuned.json is unreadable` | registry corrupt; retrain |
 

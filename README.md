@@ -232,8 +232,9 @@ That one command:
    been read yet. Nothing is overwritten: a second file of the same name gets a
    timestamp.
 6. **Trains the third model on your data and writes report 2** — the same two
-   models plus `chronos2ft`. This takes about ten minutes, and **report 1 is
-   already on disk**, so read it while this runs.
+   models plus `chronos2ft`. Training runs to completion — no time limit, so how
+   long depends on your data; about 17 minutes for a two-year, fourteen-campaign
+   export. **Report 1 is already on disk**, so read it while this runs.
 
 ```
 05-campaigns.csv: 150 days, enough to forecast; 365 days would be better
@@ -263,6 +264,16 @@ are still tellable apart in greyscale or to a colour-blind reader.
 Above each chart, three figures: what was actually spent over the window drawn,
 and what each model expects over the days ahead. They follow the dropdowns, so
 they always describe the chart you are looking at.
+
+The forecast is drawn **five times wider than the history**, because it is the
+shortest part of the series and the reason the page exists — at equal spacing it
+ends up a few pixels wide with every line piled on the others. The chart opens on
+the forecast and **scrolls left through the whole history**, as far back as your
+data goes.
+
+**Move the pointer across it** and a crosshair reads every model at that day:
+the date, and each model's number, or the actual figure if you are back in the
+observed part.
 
 Two dropdowns choose what you are looking at:
 
@@ -566,11 +577,13 @@ help — see the mirror above.
 The third one is optional and trained on your own numbers:
 
 ```bash
-models/.venv/bin/python models/finetune.py "your-export.csv" --steps 2000 --budget 600
+models/.venv/bin/python models/finetune.py "your-export.csv" --steps 2000
 ./predictmarketing forecast "your-export.csv" -model chronos2ft
 ```
 
-About 10 minutes. It has **not** beaten the stock models on the data tried so far
+It runs every step it was given; there is no time limit. How long that takes
+depends on how much data you have — on a two-year, fourteen-campaign export it
+was about 17 minutes. It has **not** beaten the stock models on the data tried so far
 (34.5% average error against 32.7%) — seven campaigns is very little to fine-tune
 on. Score it with `accuracy` before relying on it.
 

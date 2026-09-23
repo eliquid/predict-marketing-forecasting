@@ -78,7 +78,6 @@ def main():
     ap.add_argument("--context", type=int, default=512)
     ap.add_argument("--lr", type=float, default=1e-4, help="LoRA wants a higher rate than full")
     ap.add_argument("--horizon", type=int, default=7)
-    ap.add_argument("--budget", type=int, default=900, help="wall-clock seconds; a hard stop")
     args = ap.parse_args()
 
     metrics = [m.strip() for m in args.metrics.split(",") if m.strip()]
@@ -95,20 +94,19 @@ def main():
 
     from transformers.trainer_callback import TrainerCallback
 
-    class Budget(TrainerCallback):
-        def __init__(s): s.t0, s.steps, s.stopped = None, 0, False
-        def on_train_begin(s, a, st, c, **k): s.t0 = time.time()
+    # Counts steps so the registry can record what was actually run. Training is
+    # never cut short: --steps is the whole instruction, and a clock that ended
+    # it early would leave an undertrained adapter that looks like a finished one.
+    class StepCount(TrainerCallback):
+        def __init__(s): s.steps = 0
         def on_step_end(s, a, st, c, **k):
             s.steps += 1
-            if time.time() - s.t0 > args.budget:
-                c.should_training_stop = True
-                s.stopped = True
             return c
 
     from chronos import Chronos2Pipeline
     pipe = Chronos2Pipeline.from_pretrained(base["path"], device_map="cpu")
 
-    cb = Budget()
+    cb = StepCount()
     t0 = time.time()
     ft = pipe.fit([{"target": m} for _, m in series],
                   prediction_length=args.horizon, context_length=args.context,
@@ -137,7 +135,6 @@ def main():
         "train_series": len(series),
         "train_metrics": metrics,
         "steps": cb.steps,
-        "hit_time_budget": cb.stopped,
         "batch_size": args.batch_size,
         "context_length": args.context,
         "learning_rate": args.lr,
@@ -146,8 +143,7 @@ def main():
         "source_csv": os.path.abspath(args.csv),
     }}, open(REGISTRY, "w"), indent=2, sort_keys=True)
 
-    print(f"\n{cb.steps} steps in {took:.0f}s"
-          f"{' (hit the time budget)' if cb.stopped else ''}")
+    print(f"\n{cb.steps} steps in {took:.0f}s")
     # the intermediate trainer output is large and never needed again
     import shutil
     shutil.rmtree(os.path.join(HERE, "finetuned", "_work"), ignore_errors=True)

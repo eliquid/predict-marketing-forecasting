@@ -132,8 +132,12 @@ Four things must be true afterwards:
 - a file under 90 days is refused and **left in place**
 - the report opens from `file://` with both dropdowns working
 
-The last one needs a browser, not a grep: the dropdowns are JavaScript, and a
-page that renders in the terminal can still be blank in a browser.
+The last one needs a browser, not a grep: the dropdowns and the crosshair are
+JavaScript, and a page that renders in the terminal can still be blank in a
+browser. Check in the browser console that the chart scrolls
+(`scrollWidth > clientWidth`), that it opens scrolled to the forecast, and that
+a `mousemove` over the svg fills the readout — on a forecast day with every
+model, and on a history day with the actual.
 
 ## Paths must not follow the shell
 

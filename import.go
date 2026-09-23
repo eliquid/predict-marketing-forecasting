@@ -48,7 +48,7 @@ func cmdImport(args []string) error {
 	fs := flag.NewFlagSet("import", flag.ExitOnError)
 	dir := fs.String("data", defaultPath(importDir), "folder to read CSVs from")
 	horizon := fs.Int("horizon", 7, "days ahead")
-	history := fs.Int("history", 90, "days of past data drawn on the charts")
+	history := fs.Int("history", 0, "days of past data drawn on the charts (0 = all of it)")
 	dbPath := fs.String("db", defaultPath("pm.db"), "database file")
 	skipFinetune := fs.Bool("no-finetune", false,
 		"skip the fine-tuned model and write only the first report")
@@ -297,8 +297,11 @@ func trainFinetune(csv string) error {
 	if err != nil {
 		return err
 	}
+	// No time limit. Training runs the steps it was given; a wall clock that cut
+	// it short would leave an adapter that is undertrained but indistinguishable
+	// from a finished one in every report that used it.
 	cmd := exec.Command(python, filepath.Join(root, "models", "finetune.py"), abs,
-		"--steps", "2000", "--budget", "600")
+		"--steps", "2000")
 	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
 	cmd.Env = append(os.Environ(), "PYTHONDONTWRITEBYTECODE=1")
 	return cmd.Run()

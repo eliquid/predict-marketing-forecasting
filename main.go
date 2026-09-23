@@ -91,7 +91,8 @@ forecast options:
 import options:
   -data DIR       folder to read CSVs from (default data)
   -horizon N      days ahead (default 7)
-  -history N      days of past data drawn on the charts (default 90)
+  -history N      days of past data drawn on the charts (0, the default, is all
+                  of them -- the chart scrolls)
   -no-finetune    write only the first report, skipping the trained model
   -db FILE        database file (default: pm.db)
 

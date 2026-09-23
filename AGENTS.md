@@ -83,13 +83,22 @@ when given.
 | Train `chronos2ft`, then report 2 with all three | `trainFinetune`, then `writeComparison` again |
 
 **`chronos2ft` is retrained on every import**, on the newest data, which costs
-about ten minutes of CPU each time. That is deliberate: an adapter fitted to
+a real stretch of CPU each time -- about 17 minutes on a two-year, fourteen-campaign
+export, and longer with more data. That is deliberate: an adapter fitted to
 last quarter's numbers quietly goes stale, and a stale model that still looks
 current is worse than no model. `-no-finetune` writes report 1 and stops, for
 when you only want the two pretrained models.
 
+**Training is never time-limited.** `models/finetune.py` once took a `--budget` wall
+clock and `import` passed 600 seconds. On a real export that stopped training at
+step 1,210 of 2,000 -- 0.605 of an epoch -- and produced an adapter that was
+undertrained while appearing in every report as a peer of the pretrained models.
+Nothing in the reports said so. The flag, the callback and the registry field are
+gone. Do not reintroduce a time limit in any form: if training is too slow, lower
+`--steps`, which is honest about what was asked for.
+
 **Why two reports.** The third model has to be trained on the user's own data
-first, which takes about ten minutes. Report 1 is written and the CSV filed away
+first, which takes as long as it takes. Report 1 is written and the CSV filed away
 *before* training starts, so a fine-tune that fails leaves a completed import
 and a readable report rather than nothing.
 
@@ -108,6 +117,18 @@ degrades to every chart stacked, which is longer but complete.
 
 Entities and metrics are **intersected** across runs, so a dropdown never offers
 a combination some model cannot draw.
+
+**Forecast days are drawn ~5x wider than history days** (`fcPx` vs `histPx` in
+`drawCompareChart`), and the svg is emitted at a **fixed pixel width** inside a
+scroller rather than scaled to fit. Both are load-bearing: equal spacing left the
+forecast a few pixels wide with all the lines and labels on top of each other,
+and a fixed width means a pointer position inside the svg *is* a chart
+coordinate, which is how the crosshair finds the day without re-deriving the
+projection in JavaScript. `drawCompareChart` returns the drawing **and** the
+series as JSON for exactly that reason.
+
+`-history 0` (the import default) draws every day there is. Scrolling back is
+only useful if there is something behind you.
 
 The page is dark and monospaced deliberately: it is dense and numeric, a tabular
 font keeps columns of money aligned, and a fixed palette means a screenshot looks
@@ -415,7 +436,7 @@ The order is: install -> forecast with `chronos2`/`timesfm3` -> train the adapte
 on a CSV you now have -> `chronos2ft` becomes a third option.
 
 ```bash
-models/.venv/bin/python models/finetune.py "Campaign report.csv" --steps 2000 --budget 600
+models/.venv/bin/python models/finetune.py "Campaign report.csv" --steps 2000
 ./predictmarketing forecast "Campaign report.csv" -model chronos2ft
 ```
 
