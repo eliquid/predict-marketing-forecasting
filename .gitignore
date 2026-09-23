@@ -1,0 +1,27 @@
+# Built by install.sh or `go build`. Rebuilt from source in seconds.
+/predictmarketing
+/dist/
+
+# Downloaded or trained, not authored. install.sh fetches the weights and
+# records their checksums; the adapter is fitted to one person's own data and
+# must never be published with the code.
+models/.venv/
+models/cache/
+models/weights.json
+models/finetuned/
+models/finetuned.json
+models/__pycache__/
+*.pyc
+
+# Your data and everything derived from it. The database holds a real ad
+# account's spend history, and the reports name real campaigns.
+*.db
+*.db-wal
+*.db-shm
+*_forecast*.html
+
+# Written by examples/walkthrough.sh, which prints how to delete them.
+examples/walkthrough.db*
+testdata/*_forecast_*.html
+
+.DS_Store

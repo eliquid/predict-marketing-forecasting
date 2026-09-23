@@ -1,0 +1,77 @@
+# CLAUDE.md
+
+**Read `AGENTS.md` first. It is the single source of truth** for what this project
+is, how to build and test it, the model protocol, the hard rules, and the settled
+decisions. Nothing from it is repeated here, so the two cannot drift apart.
+
+This file holds only what is specific to working here as Claude.
+
+---
+
+## Coding style this project follows
+
+Two documents govern all work here. **Read both before writing or changing code:**
+
+- `guidelines/ponytail.md` — the laziest solution that actually works
+- `guidelines/karpathy-guidelines.md` — don't assume, stay surgical, define "done"
+
+They are verbatim copies of their upstream sources. Don't edit them; replace them
+wholesale if upstream changes.
+
+### The rules broken most often here — hold these especially
+
+1. **Never stall on an answer you can default.** Pick the sane option, state it in
+   one line, keep moving. Don't ask the same question twice.
+2. **Don't assume — and say what you assumed.** Every assumption goes in writing
+   before the work, not after it turns out wrong.
+3. **No invented numbers.** No time estimates, sizes or benchmarks unless measured.
+   "I don't know" beats a confident guess. This has gone wrong twice: a fabricated
+   "months" estimate, and a fabricated "takes minutes" that was really 3 seconds.
+4. **Read fully, then be lazy.** The ladder shortens the solution, never the
+   reading. Check what already exists here before inventing something.
+5. **Three short lines after the code.** Long prose only when explicitly asked for
+   (a plan, a report, a walkthrough).
+6. **Every changed line traces to the request.** No adjacent improvements.
+
+## Skills
+
+Procedures live in `.claude/skills/`. They are step-by-step tasks, not facts —
+facts belong in `AGENTS.md`.
+
+| Skill | Use it when |
+|---|---|
+| `new-export` | a fresh ad-platform CSV arrives — the recurring job |
+| `finetune` | training or retraining the `chronos2ft` adapter |
+| `add-a-model` | wiring a third forecasting model in |
+| `verify` | proving a change is sound before saying it works |
+| `sqlite-optimization` | touching the schema, a pragma, an index or a query plan |
+
+## Recent shape changes
+
+Several things moved, so older notes may mislead:
+
+- The tool forecasts **per campaign and at account level** from a single export
+  (`AGENTS.md` §2a). Notes describing one series per file predate this.
+- Forecasts are **kept and scored** against the actuals that arrive later
+  (`AGENTS.md` §4a, the `forecast_accuracy` view and the `accuracy` command).
+- There is a **third model**, `chronos2ft` — Chronos-2 with a LoRA adapter trained
+  on the user's own data (`AGENTS.md` §4c). It has not beaten the stock model.
+  Any accuracy query must filter `trained_on = 0`.
+- The **database is gated on open** (`AGENTS.md` §4a). `foreign_keys` is on,
+  `user_version` is checked, the file is 0600, and there is a partial index the
+  accuracy queries depend on. A database from an older schema is now refused with
+  an explanation rather than failing later on `no such column: entity`.
+
+Columns are sorted into forecast / setting / rate / identifier / text by rule
+(`AGENTS.md` §4b), and the tool prints which rule it applied to each. When
+something is "missing" from a forecast, read that output before suspecting a bug.
+
+## Working style that has paid off here
+
+- **Prove it, don't assert it.** Every claim in this project's docs came from a
+  command that was actually run. When you say a thing works, show the output.
+- **Attack your own change.** The defects listed at the end of `AGENTS.md` were all
+  found by deliberately trying to break the tool, not by reading the code.
+- **Fix the test only when the code is right.** Several "failures" here were stale
+  assertions, and one was a test helper that generated `2026-01-32`. Check which
+  side is wrong before editing either.
