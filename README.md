@@ -158,14 +158,94 @@ Then try the one with campaigns in it, which is what the tool is actually for:
 That forecasts each campaign **and** the account total, and tells you which
 columns it forecast, which it only stored, and which campaigns it left out.
 
-When you are ready for your own numbers, **Using it** below covers the file
-format, and `./predictmarketing --help` lists every option.
+When you are ready for your own numbers, **The recurring job** below is the
+command you will actually use day to day: drop the CSV in `data/`, run
+`./predictmarketing import`, and every model forecasts it. **Using it** covers
+the file format, and `./predictmarketing --help` lists every option.
+
+## The recurring job
+
+Once installed, this is the whole loop. You do not need any of the flags below
+to use it.
+
+```
+data/                  <- put your exported CSV here
+data/imported/         <- it moves here once it has been read
+```
+
+```bash
+./predictmarketing import
+```
+
+That one command:
+
+1. **Reads every new CSV in `data/`.** The folder is created for you, with a note
+   inside, the first time you run it.
+2. **Checks there is enough history.** At least **90 days**, or it refuses and
+   tells you so. **365 days is better** — a year makes annual seasonality
+   learnable. **730 days is best**: two years lets that seasonality be confirmed
+   rather than guessed.
+3. **Forecasts with every model**, each campaign and the account total.
+4. **Writes report 1** — `chronos2` and `timesfm3` together on one page. This
+   lands in seconds.
+5. **Moves the CSV into `data/imported/`**, so the folder only holds what has not
+   been read yet. Nothing is overwritten: a second file of the same name gets a
+   timestamp.
+6. **Trains the third model on your data and writes report 2** — the same two
+   models plus `chronos2ft`. This takes about ten minutes, and **report 1 is
+   already on disk**, so read it while this runs.
+
+```
+05-campaigns.csv: 150 days, enough to forecast; 365 days would be better
+  5 rows per day, split by "Campaign"
+  forecasting: Cost, Impr., Clicks
+  for 5: (account), Brand Search, Shopping - All, Performance Max, Display Remarketing
+  no activity at all, not forecast: Video Awareness
+
+  running chronos2
+  running timesfm3
+
+  report 1 of 2: data/05-campaigns_models.html
+  filed away:    data/imported/05-campaigns.csv
+
+  training chronos2ft on this file, which takes a few minutes.
+  Report 1 is already written -- open it while this runs.
+```
+
+### What the reports look like
+
+Both reports are one self-contained HTML file with **every model on the same
+chart**: what actually happened in grey, then one line per model over the days
+ahead — the first solid, the rest dashed, each named where it ends. Report 1
+has two model lines, report 2 has three. Dashes as well as colour, so the lines
+are still tellable apart in greyscale or to a colour-blind reader.
+
+Above each chart, three figures: what was actually spent over the window drawn,
+and what each model expects over the days ahead. They follow the dropdowns, so
+they always describe the chart you are looking at.
+
+Two dropdowns choose what you are looking at:
+
+- **Campaign** — the account total, or any one campaign
+- **Metric** — spend, clicks, impressions, or whatever else your file holds
+
+The metric list follows the file: forecast three columns and you get three
+choices, forecast seven and you get seven. Under the chart is the same forecast
+as numbers, one column per model, so you can see exactly where they disagree.
+
+At the foot of every page is the provenance: each model, its weights, the
+revision, the checksum, and — for the fine-tuned one — the last day it was
+trained on, because a model should not be judged on days it has already seen.
+
+If you would rather not wait for the fine-tune, `-no-finetune` writes report 1
+and stops.
 
 ## Commands
 
 | | |
 |---|---|
 | `predictmarketing setup` | download both models' weights and record their checksums |
+| `predictmarketing import` | **the recurring job**: read new CSVs from `data/`, forecast with every model, write both reports |
 | `predictmarketing version` | what this build is — include it in bug reports |
 | `predictmarketing models` | show each model and what it can do |
 | `predictmarketing forecast FILE.csv` | forecast a CSV of `date,value` rows |

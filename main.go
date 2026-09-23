@@ -37,6 +37,8 @@ func main() {
 		err = cmdSetup()
 	case "models":
 		err = cmdModels()
+	case "import":
+		err = cmdImport(os.Args[2:])
 	case "forecast":
 		err = cmdForecast(os.Args[2:])
 	case "runs":
@@ -67,6 +69,7 @@ func usageTo(w io.Writer) {
 
   setup                          download model weights and verify them
   models                         show each model and what it can do
+  import [options]               read new CSVs from data/, forecast with every model
   forecast FILE.csv [options]    forecast a CSV of date,value rows
   runs                           list past forecasts
   accuracy                       compare past forecasts with what actually happened
@@ -83,6 +86,13 @@ forecast options:
   -future K=V,V   known-future values, e.g. -future budget=500,500,600
   -series NAME    name for this series (default: the file name)
   -out FILE       HTML report path (default: alongside the CSV)
+  -db FILE        database file (default: pm.db)
+
+import options:
+  -data DIR       folder to read CSVs from (default data)
+  -horizon N      days ahead (default 7)
+  -history N      days of past data drawn on the charts (default 90)
+  -no-finetune    write only the first report, skipping the trained model
   -db FILE        database file (default: pm.db)
 
 accuracy options:

@@ -11,6 +11,11 @@ The base Chronos-2 weights must already be installed (`./install.sh`). If you ar
 re-running `setup` first, the Hugging Face "unauthenticated requests" warning it
 prints is expected and harmless — `AGENTS.md` §2 explains it.
 
+`predictmarketing import` now trains the adapter for you on every import and
+writes a second report with it included (`AGENTS.md` §2c). Use the steps below
+when you want to train on a specific file, with different settings, or without
+running a whole import.
+
 ## Train
 
 ```bash

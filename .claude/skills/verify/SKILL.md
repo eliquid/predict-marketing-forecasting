@@ -114,3 +114,23 @@ State what you ran and what it printed. Do not say a change works because it
 compiles. If a test fails, work out whether the code or the assertion is wrong
 before editing either — several failures here have been stale assertions, and one
 was a test helper generating `2026-01-32`.
+
+## The import workflow
+
+`import` touches more moving parts than any other command, so check it end to
+end rather than only its units:
+
+```bash
+mkdir -p /tmp/v/data && cp examples/05-campaigns.csv /tmp/v/data/
+(cd /tmp/v && /path/to/predictmarketing import -no-finetune)
+```
+
+Four things must be true afterwards:
+
+- `data/05-campaigns_models.html` exists and holds **both** models
+- the CSV has moved to `data/imported/`, not been copied or deleted
+- a file under 90 days is refused and **left in place**
+- the report opens from `file://` with both dropdowns working
+
+The last one needs a browser, not a grep: the dropdowns are JavaScript, and a
+page that renders in the terminal can still be blank in a browser.

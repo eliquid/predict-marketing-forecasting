@@ -67,6 +67,14 @@ Several things moved, so older notes may mislead:
   (`AGENTS.md` §2). Do not add token handling to `models/fetch.py` to silence it —
   `huggingface_hub` already reads `HF_TOKEN` from the environment.
 
+- **`import` is the recurring job now** (`AGENTS.md` §2c): `data/` in,
+  two comparison reports out, CSV filed into `data/imported/`. It refuses under
+  90 days. `forecast` is still the single-model command underneath it.
+- The **comparison report** (`compare.go`) is deliberately separate from the
+  single-model one (`report.go`): different question, different shape. Its
+  dropdowns are plain JavaScript on purpose — htmx needs a server a `file://`
+  page has not got.
+
 Columns are sorted into forecast / setting / rate / identifier / text by rule
 (`AGENTS.md` §4b), and the tool prints which rule it applied to each. When
 something is "missing" from a forecast, read that output before suspecting a bug.

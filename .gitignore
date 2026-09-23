@@ -25,3 +25,7 @@ examples/walkthrough.db*
 testdata/*_forecast_*.html
 
 .DS_Store
+
+# Where your exports go, and where they are filed after being read. Your data,
+# and the reports made from it.
+/data/

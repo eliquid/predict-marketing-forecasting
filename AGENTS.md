@@ -57,7 +57,50 @@ only against per-IP rate limits (shared connections, CI, repeated installs); it
 does nothing if Hugging Face is blocked outright, which is what the Chronos-2
 mirror in Releases is for.
 
-Commands: `setup`, `models`, `forecast`, `runs`, `accuracy`.
+Commands: `setup`, `models`, `import`, `forecast`, `runs`, `accuracy`.
+
+## 2c. The import workflow
+
+`import` is the recurring job and the path most users take. `forecast` is the
+single-model command underneath it, still there for one-off questions.
+
+| Step | Where it lives |
+|---|---|
+| Read every new CSV in `data/` | `pendingFiles`, creates the folder and a note if absent |
+| Refuse under **90 days**; 365 better, 730 best | `enoughHistory` / `historyVerdict` |
+| Forecast each model over every entity | `runModel` |
+| Report 1: `chronos2` + `timesfm3` | `writeComparison` |
+| Move the CSV to `data/imported/` | `fileAway`, never overwrites |
+| Train `chronos2ft`, then report 2 with all three | `trainFinetune`, then `writeComparison` again |
+
+**Why two reports.** The third model has to be trained on the user's own data
+first, which takes about ten minutes. Report 1 is written and the CSV filed away
+*before* training starts, so a fine-tune that fails leaves a completed import
+and a readable report rather than nothing.
+
+**The comparison report** (`compare.go`, `compare_template.go`) is separate from
+the single-model report in `report.go`, because it answers a different question:
+not "what does this model say" but "do the models agree". Every model's median is
+drawn on one set of axes over the same history. There are no uncertainty bands —
+three overlapping translucent bands are unreadable, and agreement is what the
+page is for.
+
+Every (entity, metric) pane is rendered into the page and all but one hidden; two
+dropdowns swap them with a few lines of plain JavaScript. Not htmx, which needs a
+server a `file://` page does not have, and not a chart library, which would be a
+download it cannot make. Without JavaScript nothing is hidden and the page
+degrades to every chart stacked, which is longer but complete.
+
+Entities and metrics are **intersected** across runs, so a dropdown never offers
+a combination some model cannot draw.
+
+The page is dark and monospaced deliberately: it is dense and numeric, a tabular
+font keeps columns of money aligned, and a fixed palette means a screenshot looks
+the same to everyone. Line identity is carried by **dash pattern as well as
+colour** (`dashFor`/`strokeFor`), so the chart survives greyscale and colour
+blindness. End labels are pushed apart by `spreadLabels`, because models that
+agree finish at the same height and would otherwise print their names on top of
+each other exactly when the chart is most worth reading.
 
 `forecast` flags:
 
@@ -131,7 +174,10 @@ stored forecast, which is what `accuracy` scores against.
 ## 3. Repository map
 
 ```
-main.go          commands: setup, models, forecast, runs
+main.go          commands: setup, models, import, forecast, runs, accuracy
+import.go        the recurring job: data/ -> forecasts -> two reports -> imported/
+compare.go       the multi-model comparison report
+compare_template.go  its page, with the campaign and metric dropdowns
 ingest.go        CSV -> Data (dates, numeric columns, skipped text columns)
 worker.go        the model protocol + output validation   <- read this first
 db.go            SQLite: raw, series, runs, forecasts

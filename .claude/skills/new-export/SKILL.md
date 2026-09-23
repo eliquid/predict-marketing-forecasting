@@ -5,6 +5,21 @@ description: Import a fresh ad-platform export, forecast it, and score the forec
 
 # Importing a new export
 
+## The short version
+
+```bash
+cp "Campaign report.csv" data/
+./predictmarketing import
+```
+
+That is the whole job: it forecasts with every model, writes report 1
+(`chronos2` + `timesfm3`) immediately, files the CSV into `data/imported/`, then
+trains `chronos2ft` and writes report 2 with all three. At least 90 days of
+history is required; 365 is better, 730 best. See `AGENTS.md` §2c.
+
+The steps below are the manual equivalent, for when you want one model, one
+metric, or a horizon the import does not use.
+
 Read `AGENTS.md` §2a for how a campaign export is read, and §4a for what the
 database holds.
 

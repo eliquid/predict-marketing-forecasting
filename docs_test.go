@@ -4,6 +4,7 @@ package main
 // would otherwise leave an agent following instructions to files that moved.
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -207,17 +208,29 @@ func TestAnExampleHasSeveralCampaignsPerDay(t *testing.T) {
 // were all live for weeks while `--help` listed none of them, which made the
 // per-campaign feature undiscoverable from the command line.
 func TestHelpListsEveryFlag(t *testing.T) {
-	src, err := os.ReadFile("main.go")
+	// Every command's flags, not just main.go's: import defines its own in
+	// import.go, and a help entry for a flag the program does not accept is as
+	// wrong as a flag the help never mentions.
+	sources, err := filepath.Glob("*.go")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defined := map[string]bool{}
-	for _, m := range regexp.MustCompile(`fs\.(?:String|Int|Bool)\("([a-z-]+)"`).
-		FindAllStringSubmatch(string(src), -1) {
-		defined[m[1]] = true
+	for _, f := range sources {
+		if strings.HasSuffix(f, "_test.go") {
+			continue
+		}
+		src, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, m := range regexp.MustCompile(`fs\.(?:String|Int|Bool)\("([a-z-]+)"`).
+			FindAllStringSubmatch(string(src), -1) {
+			defined[m[1]] = true
+		}
 	}
 	if len(defined) < 5 {
-		t.Fatalf("only found %d flags in main.go; the pattern stopped matching", len(defined))
+		t.Fatalf("only found %d flags; the pattern stopped matching", len(defined))
 	}
 
 	var help strings.Builder
@@ -340,6 +353,46 @@ func TestFirstRunSurprisesAreDocumented(t *testing.T) {
 		b, _ := os.ReadFile(f)
 		if strings.Contains(string(b), "rm -f *_forecast_*.html") {
 			t.Errorf("%s tells people to run a bare glob that fails under zsh", f)
+		}
+	}
+}
+
+// The import workflow is the path most people take, so the rules it enforces --
+// where files go, how much history is needed, and what the two reports contain
+// -- have to be written down everywhere someone might look.
+func TestImportWorkflowIsDocumented(t *testing.T) {
+	for _, c := range []struct {
+		file  string
+		wants []string
+	}{
+		{"README.md", []string{
+			"predictmarketing import", "data/imported", "90 days", "365", "730",
+			"report 1", "report 2", "Campaign", "Metric",
+		}},
+		{"AGENTS.md", []string{"import", "data/imported", "enoughHistory", "writeComparison"}},
+		{"CLAUDE.md", []string{"import", "compare.go"}},
+		{".claude/skills/new-export/SKILL.md", []string{"predictmarketing import", "90 days"}},
+		{".claude/skills/finetune/SKILL.md", []string{"import"}},
+		{".claude/skills/verify/SKILL.md", []string{"import"}},
+	} {
+		b, err := os.ReadFile(c.file)
+		if err != nil {
+			t.Errorf("%s: %v", c.file, err)
+			continue
+		}
+		for _, w := range c.wants {
+			if !strings.Contains(string(b), w) {
+				t.Errorf("%s does not mention %q", c.file, w)
+			}
+		}
+	}
+
+	// The thresholds in the docs must be the ones the code enforces.
+	b, _ := os.ReadFile("README.md")
+	readme := string(b)
+	for _, n := range []int{importMinDays, importGoodDays, importBestDays} {
+		if !strings.Contains(readme, fmt.Sprint(n)) {
+			t.Errorf("README does not state the %d-day threshold the code uses", n)
 		}
 	}
 }
