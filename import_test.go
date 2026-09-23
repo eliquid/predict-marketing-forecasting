@@ -143,10 +143,12 @@ func TestFileAwayKeepsBothImports(t *testing.T) {
 	}
 }
 
-// The two reports are named so it is obvious which is which.
+// The two reports are named so it is obvious which is which, and both land in
+// data/reports/ rather than beside the export -- data/ is meant to show, at a
+// glance, what has not been imported yet.
 func TestReportPaths(t *testing.T) {
-	first := reportPath("data/Campaign report.csv", "models")
-	second := reportPath("data/Campaign report.csv", "with-finetune")
+	first := reportPath("data", "data/Campaign report.csv", "models")
+	second := reportPath("data", "data/Campaign report.csv", "with-finetune")
 	if first == second {
 		t.Fatal("both reports would be written to the same file")
 	}
@@ -156,6 +158,12 @@ func TestReportPaths(t *testing.T) {
 		}
 		if strings.Contains(filepath.Base(p), ".csv") {
 			t.Errorf("%s kept the csv extension", p)
+		}
+		if filepath.Dir(p) != filepath.Join("data", reportsName) {
+			t.Errorf("%s is not in data/%s", p, reportsName)
+		}
+		if !strings.Contains(filepath.Base(p), "Campaign report") {
+			t.Errorf("%s lost the name of the export it came from", p)
 		}
 	}
 }

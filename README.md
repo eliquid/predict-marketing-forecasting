@@ -171,8 +171,12 @@ to use it.
 ```
 data/                  <- put your exported CSV here
 data/imported/         <- it moves here once it has been read
+data/reports/          <- the HTML reports land here
 pm.db                  <- everything read and every forecast made, kept here
 ```
+
+`data/` itself therefore shows, at a glance, exactly what has not been imported
+yet: if there is a CSV sitting in it, it still needs reading.
 
 All three live **next to the program**, not next to wherever your shell happens
 to be. Run `predictmarketing import` from anywhere and it reads the same folder
@@ -222,8 +226,8 @@ That one command:
    learnable. **730 days is best**: two years lets that seasonality be confirmed
    rather than guessed.
 3. **Forecasts with every model**, each campaign and the account total.
-4. **Writes report 1** — `chronos2` and `timesfm3` together on one page. This
-   lands in seconds.
+4. **Writes report 1** into `data/reports/` — `chronos2` and `timesfm3` together
+   on one page. This lands in seconds.
 5. **Moves the CSV into `data/imported/`**, so the folder only holds what has not
    been read yet. Nothing is overwritten: a second file of the same name gets a
    timestamp.
@@ -241,7 +245,7 @@ That one command:
   running chronos2
   running timesfm3
 
-  report 1 of 2: data/05-campaigns_models.html
+  report 1 of 2: data/reports/05-campaigns_models.html
   filed away:    data/imported/05-campaigns.csv
 
   training chronos2ft on this file, which takes a few minutes.

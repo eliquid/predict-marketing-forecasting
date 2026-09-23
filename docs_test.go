@@ -422,3 +422,57 @@ func TestExportInstructionsAreDocumented(t *testing.T) {
 		}
 	}
 }
+
+// A worker is started by the Go program, which may be run from any directory, so
+// every Python file has to anchor its paths to its own location. A cwd-relative
+// path works in testing and fails the moment the tool is run from elsewhere --
+// the same class of bug that put data/ and pm.db in the wrong place.
+func TestPythonAnchorsPathsToItself(t *testing.T) {
+	files, err := filepath.Glob(filepath.Join("models", "*.py"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(files) < 4 {
+		t.Fatalf("found only %d python files; the glob stopped matching", len(files))
+	}
+	for _, f := range files {
+		b, err := os.ReadFile(f)
+		if err != nil {
+			t.Errorf("%s: %v", f, err)
+			continue
+		}
+		src := string(b)
+		// Either it anchors itself, or it is handed an anchored path by a caller
+		// that did (weights_check.load_verified(here, name)).
+		anchors := strings.Contains(src, "__file__")
+		takesHere := strings.Contains(src, "def load_verified(here")
+		if !anchors && !takesHere {
+			t.Errorf("%s resolves paths from the current directory; anchor them "+
+				"with HERE = os.path.dirname(os.path.abspath(__file__))", f)
+		}
+	}
+}
+
+// Reports go in data/reports/, not beside the export. data/ is meant to show at
+// a glance what is still waiting to be read, and a folder mixing inputs with
+// generated output cannot do that.
+func TestReportsFolderIsDocumented(t *testing.T) {
+	for _, f := range []string{
+		"README.md", "AGENTS.md", "CLAUDE.md",
+		".claude/skills/new-export/SKILL.md",
+		".claude/skills/verify/SKILL.md",
+	} {
+		b, err := os.ReadFile(f)
+		if err != nil {
+			t.Errorf("%s: %v", f, err)
+			continue
+		}
+		if !strings.Contains(string(b), "data/reports") {
+			t.Errorf("%s does not say reports go in data/reports/", f)
+		}
+	}
+	// And the code must agree with the docs.
+	if got := reportPath("data", "data/x.csv", "models"); got != filepath.Join("data", "reports", "x_models.html") {
+		t.Errorf("reportPath puts reports at %s", got)
+	}
+}

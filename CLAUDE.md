@@ -75,6 +75,8 @@ Several things moved, so older notes may mislead:
 - **`data/` and `pm.db` are anchored to the install**, like `models/` always
   was (`defaultPath`). Never reintroduce a bare relative default: it splits the
   forecast history across databases and `accuracy` silently loses it.
+- **Reports are written to `data/reports/`**, never beside the export: `data/`
+  has to show at a glance what is still waiting to be read.
 - **`import` is the recurring job now** (`AGENTS.md` §2c): `data/` in,
   two comparison reports out, CSV filed into `data/imported/`. It refuses under
   90 days. `forecast` is still the single-model command underneath it.

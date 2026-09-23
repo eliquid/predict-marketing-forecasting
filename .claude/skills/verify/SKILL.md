@@ -127,10 +127,26 @@ mkdir -p /tmp/v/data && cp examples/05-campaigns.csv /tmp/v/data/
 
 Four things must be true afterwards:
 
-- `data/05-campaigns_models.html` exists and holds **both** models
+- `data/reports/05-campaigns_models.html` exists and holds **both** models
 - the CSV has moved to `data/imported/`, not been copied or deleted
 - a file under 90 days is refused and **left in place**
 - the report opens from `file://` with both dropdowns working
 
 The last one needs a browser, not a grep: the dropdowns are JavaScript, and a
 page that renders in the terminal can still be blank in a browser.
+
+## Paths must not follow the shell
+
+`models/`, `data/` and `pm.db` all resolve relative to the **installation**, never
+to the current directory (`defaultPath` in `import.go`, `installDir` in
+`worker.go`, `HERE` in each `models/*.py`). Check it after touching any of them:
+
+```bash
+cd /tmp && /path/to/install/predictmarketing import
+```
+
+It must read the install's `data/` and write the install's `pm.db`, and must not
+create anything in `/tmp`. The failure this guards against is silent: a second
+empty `data/` and a second database, while the models still load correctly, so
+it looks like it worked. Forecasts split across databases cannot be scored, and
+`accuracy` then has less history than the user believes.

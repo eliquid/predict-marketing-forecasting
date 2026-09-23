@@ -70,3 +70,16 @@ leaked** — find out why instead of accepting it.
 Run the checks in `.claude/skills/verify`. In particular, a new model must pass
 `TestEachMetricGetsItsOwnForecast`, which proves it forecasts every metric
 genuinely rather than deriving some from others.
+
+## Paths in a new worker
+
+Anchor everything to the script's own location:
+
+```python
+HERE = os.path.dirname(os.path.abspath(__file__))
+```
+
+Never open a path relative to the current directory. A worker is started by the
+Go program, which may be run from anywhere, and a cwd-relative path would look
+fine in testing and fail the moment someone runs the tool from another folder.
+Every existing worker does this, and a test enforces it.

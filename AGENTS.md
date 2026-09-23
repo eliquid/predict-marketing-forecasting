@@ -77,8 +77,9 @@ when given.
 | Read every new CSV in `data/` | `pendingFiles`, creates the folder and a note if absent |
 | Refuse under **90 days**; 365 better, 730 best | `enoughHistory` / `historyVerdict` |
 | Forecast each model over every entity | `runModel` |
-| Report 1: `chronos2` + `timesfm3` | `writeComparison` |
+| Report 1 into `data/reports/`: `chronos2` + `timesfm3` | `reportPath`, then `writeComparison` |
 | Move the CSV to `data/imported/` | `fileAway`, never overwrites |
+| Reports go to `data/reports/`, never beside the export | `reportPath` — `data/` is meant to show at a glance what is still unread |
 | Train `chronos2ft`, then report 2 with all three | `trainFinetune`, then `writeComparison` again |
 
 **`chronos2ft` is retrained on every import**, on the newest data, which costs

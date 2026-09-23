@@ -19,8 +19,11 @@ cp "Campaign report.csv" data/
 ./predictmarketing import
 ```
 
+Run it from anywhere: `data/` and `pm.db` are anchored to the installation, not
+to the shell, so there is one folder and one database no matter where you stand.
+
 That is the whole job: it forecasts with every model, writes report 1
-(`chronos2` + `timesfm3`) immediately, files the CSV into `data/imported/`, then
+(`chronos2` + `timesfm3`) immediately, puts the reports in `data/reports/`, files the CSV into `data/imported/`, then
 trains `chronos2ft` and writes report 2 with all three. At least 90 days of
 history is required; 365 is better, 730 best. See `AGENTS.md` §2c.
 

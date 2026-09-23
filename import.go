@@ -41,6 +41,7 @@ const (
 const (
 	importDir    = "data"
 	importedName = "imported"
+	reportsName  = "reports"
 )
 
 func cmdImport(args []string) error {
@@ -78,8 +79,10 @@ func pendingFiles(dir string) ([]string, error) {
 	info, err := os.Stat(dir)
 	switch {
 	case err != nil:
-		if mkErr := os.MkdirAll(filepath.Join(dir, importedName), 0o755); mkErr != nil {
-			return nil, fmt.Errorf("creating %s: %w", dir, mkErr)
+		for _, sub := range []string{importedName, reportsName} {
+			if mkErr := os.MkdirAll(filepath.Join(dir, sub), 0o755); mkErr != nil {
+				return nil, fmt.Errorf("creating %s: %w", dir, mkErr)
+			}
 		}
 		_ = os.WriteFile(filepath.Join(dir, "README.txt"), []byte(dataFolderNote), 0o644)
 		return nil, fmt.Errorf("created %s/ for you, and it is empty.\n"+
@@ -115,7 +118,7 @@ const dataFolderNote = `Put your exported CSV files in this folder, then run:
     ./predictmarketing import
 
 Each file is forecast with every model and then moved into imported/, so this
-folder only ever holds what has not been read yet.
+folder only ever holds what has not been read yet. The reports land in reports/.
 
 At least 90 days of history is required. A year is better, two years is best.
 `
@@ -170,7 +173,10 @@ func importOne(path, dir, dbPath string, horizon, history int, skipFinetune bool
 		runs = append(runs, r)
 	}
 
-	first := reportPath(path, "models")
+	first := reportPath(dir, path, "models")
+	if err := os.MkdirAll(filepath.Dir(first), 0o755); err != nil {
+		return fmt.Errorf("creating %s: %w", filepath.Dir(first), err)
+	}
 	if err := writeComparison(first, runs, data, days, history); err != nil {
 		return err
 	}
@@ -205,7 +211,7 @@ func importOne(path, dir, dbPath string, horizon, history int, skipFinetune bool
 	}
 	runs = append(runs, ft)
 
-	second := reportPath(path, "with-finetune")
+	second := reportPath(dir, path, "with-finetune")
 	if err := writeComparison(second, runs, data, days, history); err != nil {
 		return err
 	}
@@ -318,9 +324,13 @@ func fileAway(path, dir string) (string, error) {
 	return target, nil
 }
 
-// reportPath names a report next to the file it came from.
-func reportPath(csv, suffix string) string {
-	return strings.TrimSuffix(csv, filepath.Ext(csv)) + "_" + suffix + ".html"
+// reportPath names a report in data/reports/, keeping the name of the export it
+// came from. Reports used to sit beside the CSV, which meant data/ filled up
+// with a mixture of things waiting to be read and things already produced --
+// and the folder is meant to say, at a glance, what has not been imported yet.
+func reportPath(dir, csv, suffix string) string {
+	base := strings.TrimSuffix(filepath.Base(csv), filepath.Ext(csv))
+	return filepath.Join(dir, reportsName, base+"_"+suffix+".html")
 }
 
 func newRunID() string {
