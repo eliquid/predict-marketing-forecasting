@@ -171,7 +171,43 @@ to use it.
 ```
 data/                  <- put your exported CSV here
 data/imported/         <- it moves here once it has been read
+pm.db                  <- everything read and every forecast made, kept here
 ```
+
+All three live **next to the program**, not next to wherever your shell happens
+to be. Run `predictmarketing import` from anywhere and it reads the same folder
+and writes the same database — which matters, because `accuracy` scores the
+forecasts it finds there, and a second database somewhere else would silently
+have less history than you think. `-data` and `-db` override it if you want
+separate ones on purpose.
+
+### Getting the file out of Google Ads
+
+The export has to be the right shape, and the default download is not it:
+
+1. From the campaigns view, open the download menu and choose
+   **More options** — not the one-click download.
+2. Set it to **daily**. You want one row per campaign per day; a summary with
+   one row per campaign has no time series in it at all.
+3. Choose **`.csv`** — **not `.csv (Excel)`**.
+
+That last one matters more than it looks. Despite the name, the Excel option is
+**UTF-16 encoded and tab-separated**, so it is not a CSV in any sense the tool
+can read. It is refused, with a message telling you the file looks
+tab-separated. Re-download it as plain `.csv` and it loads.
+
+If you already have an Excel-format file and would rather convert than
+re-download:
+
+```bash
+iconv -f UTF-16 -t UTF-8 "Campaign report.csv" | tr '\t' ',' > fixed.csv
+```
+
+That is tested: on a real 16,485-row Excel-format export it produced a file the
+tool read correctly, campaign names with commas in them included — those arrive
+quoted, and quoting survives the conversion. What it would break is a campaign
+name containing a **tab**, which `tr` would turn into a column break. Read the
+first few lines before trusting it.
 
 ```bash
 ./predictmarketing import

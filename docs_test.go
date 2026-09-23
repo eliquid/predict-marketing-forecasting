@@ -396,3 +396,29 @@ func TestImportWorkflowIsDocumented(t *testing.T) {
 		}
 	}
 }
+
+// The wrong download is the most common reason a real export will not load: the
+// Excel option is UTF-16 and tab-separated despite its .csv name. Every file
+// someone might consult has to say which download to take.
+func TestExportInstructionsAreDocumented(t *testing.T) {
+	for _, c := range []struct {
+		file  string
+		wants []string
+	}{
+		{"README.md", []string{"More options", "daily", "Excel", "UTF-16"}},
+		{"AGENTS.md", []string{"More options", "daily", "Excel", "UTF-16"}},
+		{"CLAUDE.md", []string{"More options", "Excel"}},
+		{".claude/skills/new-export/SKILL.md", []string{"More options", "Excel"}},
+	} {
+		b, err := os.ReadFile(c.file)
+		if err != nil {
+			t.Errorf("%s: %v", c.file, err)
+			continue
+		}
+		for _, w := range c.wants {
+			if !strings.Contains(string(b), w) {
+				t.Errorf("%s does not tell the reader about %q", c.file, w)
+			}
+		}
+	}
+}

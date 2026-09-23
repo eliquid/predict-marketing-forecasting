@@ -67,6 +67,14 @@ Several things moved, so older notes may mislead:
   (`AGENTS.md` §2). Do not add token handling to `models/fetch.py` to silence it —
   `huggingface_hub` already reads `HF_TOKEN` from the environment.
 
+- **The export has to be the right download.** Google Ads: download →
+  **More options**, segmented **daily**, format **`.csv`** and never
+  `.csv (Excel)` —
+  the Excel one is UTF-16 tab-separated despite the name and is refused
+  (`AGENTS.md` §2a0). This is the most common reason a real file will not load.
+- **`data/` and `pm.db` are anchored to the install**, like `models/` always
+  was (`defaultPath`). Never reintroduce a bare relative default: it splits the
+  forecast history across databases and `accuracy` silently loses it.
 - **`import` is the recurring job now** (`AGENTS.md` §2c): `data/` in,
   two comparison reports out, CSV filed into `data/imported/`. It refuses under
   90 days. `forecast` is still the single-model command underneath it.

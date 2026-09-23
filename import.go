@@ -45,10 +45,10 @@ const (
 
 func cmdImport(args []string) error {
 	fs := flag.NewFlagSet("import", flag.ExitOnError)
-	dir := fs.String("data", importDir, "folder to read CSVs from")
+	dir := fs.String("data", defaultPath(importDir), "folder to read CSVs from")
 	horizon := fs.Int("horizon", 7, "days ahead")
 	history := fs.Int("history", 90, "days of past data drawn on the charts")
-	dbPath := fs.String("db", "pm.db", "database file")
+	dbPath := fs.String("db", defaultPath("pm.db"), "database file")
 	skipFinetune := fs.Bool("no-finetune", false,
 		"skip the fine-tuned model and write only the first report")
 	fs.Parse(reorderFlags(args))
@@ -327,4 +327,24 @@ func newRunID() string {
 	b := make([]byte, 6)
 	_, _ = rand.Read(b)
 	return hex.EncodeToString(b)
+}
+
+// defaultPath anchors a default file or folder to the installation rather than
+// to wherever the shell happens to be.
+//
+// models/ has always been found relative to the binary, but data/ and pm.db
+// were plain relative paths, so running the program from another directory
+// silently made a second, empty data/ there and a second database beside it --
+// while still loading the models correctly, which is what made it look like it
+// had worked. Forecasts scattered across several databases cannot be scored
+// against later actuals, and `accuracy` would quietly have less history than
+// the user thinks.
+//
+// An explicit -db or -data still wins; this only decides where "the default"
+// points when nobody said.
+func defaultPath(name string) string {
+	if root := installDir(); root != "" && root != "." {
+		return filepath.Join(root, name)
+	}
+	return name
 }

@@ -220,7 +220,7 @@ func cmdForecast(args []string) error {
 	future := fs.String("future", "", "known-future values, e.g. budget=500,500,600")
 	history := fs.Int("history", 90, "days of past data to draw on the chart")
 	out := fs.String("out", "", "HTML report path")
-	dbPath := fs.String("db", "pm.db", "database file")
+	dbPath := fs.String("db", defaultPath("pm.db"), "database file")
 	fs.Parse(reorderFlags(args))
 
 	if fs.NArg() < 1 {
@@ -506,7 +506,7 @@ func reorderFlags(args []string) []string {
 
 func cmdRuns(args []string) error {
 	fs := flag.NewFlagSet("runs", flag.ExitOnError)
-	dbPath := fs.String("db", "pm.db", "database file")
+	dbPath := fs.String("db", defaultPath("pm.db"), "database file")
 	fs.Parse(args)
 
 	db, err := openDB(*dbPath)
@@ -574,7 +574,7 @@ func sortedKeys(m map[string][]float64) []string {
 // simply has no actual, and is counted as still waiting.
 func cmdAccuracy(args []string) error {
 	fs := flag.NewFlagSet("accuracy", flag.ExitOnError)
-	dbPath := fs.String("db", "pm.db", "database file")
+	dbPath := fs.String("db", defaultPath("pm.db"), "database file")
 	entity := fs.String("entity", AccountEntity, "which campaign (default: the account total)")
 	metric := fs.String("metric", "", "one metric (default: all)")
 	series := fs.String("series", "", "which dataset (default: all)")

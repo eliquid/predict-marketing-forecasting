@@ -64,6 +64,14 @@ Commands: `setup`, `models`, `import`, `forecast`, `runs`, `accuracy`.
 `import` is the recurring job and the path most users take. `forecast` is the
 single-model command underneath it, still there for one-off questions.
 
+**Defaults are anchored to the installation, not the shell** (`defaultPath`).
+`models/` always resolved relative to the binary; `data/` and `pm.db` did not,
+so running from another directory made a second empty `data/` and a second
+database while still loading the models — which is what made it look like it had
+worked. Forecasts split across databases cannot be scored, so `accuracy` would
+quietly have less history than the user believes. `-data` and `-db` still win
+when given.
+
 | Step | Where it lives |
 |---|---|
 | Read every new CSV in `data/` | `pendingFiles`, creates the folder and a note if absent |
@@ -72,6 +80,12 @@ single-model command underneath it, still there for one-off questions.
 | Report 1: `chronos2` + `timesfm3` | `writeComparison` |
 | Move the CSV to `data/imported/` | `fileAway`, never overwrites |
 | Train `chronos2ft`, then report 2 with all three | `trainFinetune`, then `writeComparison` again |
+
+**`chronos2ft` is retrained on every import**, on the newest data, which costs
+about ten minutes of CPU each time. That is deliberate: an adapter fitted to
+last quarter's numbers quietly goes stale, and a stale model that still looks
+current is worse than no model. `-no-finetune` writes report 1 and stops, for
+when you only want the two pretrained models.
 
 **Why two reports.** The third model has to be trained on the user's own data
 first, which takes about ten minutes. Report 1 is written and the CSV filed away
@@ -116,6 +130,16 @@ each other exactly when the chart is most worth reading.
 | `-series NAME` | dataset name, default the file name |
 | `-db` / `-out` | database and report paths |
 
+`import` flags:
+
+| | |
+|---|---|
+| `-data DIR` | folder to read from, default `data` |
+| `-horizon N` | days ahead, default 7 |
+| `-history N` | days of past data drawn on the charts, default 90 |
+| `-no-finetune` | write report 1 only, skipping the ten-minute retrain |
+| `-db FILE` | database file, default `pm.db` |
+
 Longer checks:
 
 ```bash
@@ -124,6 +148,34 @@ go test -run '^$' -fuzz FuzzReadCSV -fuzztime 60s     # coverage-guided fuzzing
 ```
 
 If `go test` skips model tests, the Python environment is missing — run `./install.sh`.
+
+## 2a0. Getting the export in the first place
+
+Most files that fail do so before any of the rules below are reached, because
+the wrong download was taken. What to ask for:
+
+| | |
+|---|---|
+| Where | the campaigns view, **download → More options**, not the one-click download |
+| Segment | **daily** — one row per campaign per day. A summary with one row per campaign has no series in it |
+| Format | **`.csv`**, never **`.csv (Excel)`** |
+
+**The Excel option is not a CSV.** Measured on a real export: it is UTF-16
+little-endian (BOM `ff fe`) and **tab**-separated, despite the `.csv` name. It
+hits two guards in turn — first `whyOneColumn` ("probably tab-separated"), and
+if only the separator is fixed, then the UTF-8 header check. Neither message
+names UTF-16 specifically; if that proves confusing in practice, that is the
+message to improve, not the guards.
+
+Converting one rather than re-downloading works and is tested:
+
+```bash
+iconv -f UTF-16 -t UTF-8 "Campaign report.csv" | tr '\t' ',' > fixed.csv
+```
+
+On a 16,485-row export this produced a file that imported cleanly: 1,099 days,
+15 campaigns, names containing commas intact, because those arrive quoted and
+the quoting survives. A campaign name containing a **tab** would break it.
 
 ## 2a. How a campaign export is read
 

@@ -5,6 +5,13 @@ description: Import a fresh ad-platform export, forecast it, and score the forec
 
 # Importing a new export
 
+## Get the right download first
+
+Google Ads, campaigns view: **download → More options**, segmented **daily**,
+format **`.csv`** — **not `.csv (Excel)`**. The Excel one is UTF-16 and
+tab-separated despite its name, and is refused. `AGENTS.md` §2a0 has the
+conversion command if a file has already been downloaded the wrong way.
+
 ## The short version
 
 ```bash

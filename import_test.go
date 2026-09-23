@@ -394,3 +394,41 @@ func TestSpreadLabelsSeparatesAndStaysInBounds(t *testing.T) {
 		t.Error("spreadLabels invented a label from nothing")
 	}
 }
+
+// models/ has always been found relative to the binary, but data/ and pm.db were
+// plain relative paths. Running the program from another directory therefore made
+// a second empty data/ there and a second database beside it, while still loading
+// the models correctly -- which is exactly what made it look like it had worked.
+// Forecasts split across databases cannot be scored against later actuals.
+func TestDefaultsAnchorToTheInstallNotTheShell(t *testing.T) {
+	root := installDir()
+	if root == "" || root == "." {
+		t.Skip("not running from an installation; nothing to anchor to")
+	}
+
+	for _, name := range []string{"pm.db", importDir} {
+		got := defaultPath(name)
+		if !filepath.IsAbs(got) {
+			t.Errorf("defaultPath(%q) = %q, want an absolute path", name, got)
+		}
+		if filepath.Dir(got) != root {
+			t.Errorf("defaultPath(%q) = %q, want it inside %q", name, got, root)
+		}
+	}
+
+	// The same answer wherever the process happens to be standing.
+	before := defaultPath("pm.db")
+	dir := t.TempDir()
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(dir); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chdir(wd)
+
+	if after := defaultPath("pm.db"); after != before {
+		t.Errorf("the default database moved with the shell: %q then %q", before, after)
+	}
+}
