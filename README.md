@@ -31,6 +31,136 @@ which model and which weights produced them.
 
 ---
 
+## Installing
+
+### Getting it
+
+```bash
+git clone https://github.com/eliquid/predict-marketing-forecasting.git
+cd predict-marketing-forecasting
+./install.sh
+```
+
+If someone sent you a folder instead of a link, skip the clone and run
+`./install.sh` from inside it.
+
+**`go install` will not work, and that is not a bug.** The models are Python and
+their weights are 1.7 GB, so the program needs the `models/` folder sitting next
+to it. A lone binary in `~/go/bin` has nothing to run and says so. Clone the
+repository instead.
+
+### Versions
+
+Tested on these. **Nothing here is pinned to them** — the installer does not
+compare version numbers against a hardcoded list, and neither newer nor slightly
+older versions are refused.
+
+| | Tested with | Required |
+|---|---|---|
+| Go | 1.26.5 | 1.24 or newer (`go.mod`) — needed only if you build from source |
+| Python | 3.11.15 | 3.10 or newer; `install.sh` prefers 3.11 and accepts what you have |
+| SQLite | 3.50.4 | **none** — it is compiled into the program |
+
+Everything above, and every measurement quoted in this README, was run on:
+
+> **MacBook Pro (14-inch, 2021)** — Apple M1 Pro, 10 cores (8 performance,
+> 2 efficiency), 32 GB memory, macOS 26.1, arm64.
+
+That is the only machine it has been tested on. It is pure Go plus Python, with
+no platform-specific code, so Linux and Intel Macs should be fine — but "should"
+is doing real work in that sentence, and nobody has checked. Windows builds and
+runs the program, though `install.sh` is a shell script (see **Building**).
+
+Timings scale with the machine. A forecast takes three to four seconds here
+(3.1s and 3.9s on two consecutive runs of `testdata/example.csv`), almost all of
+it loading the model rather than predicting — so a slower disk shows up more
+than a slower CPU, and the horizon barely matters.
+
+**You do not need SQLite installed.** The database is `modernc.org/sqlite`, a
+pure-Go implementation built into the binary, so there is no system library to
+match, no CGo, and nothing to go out of step. That is also why the program
+cross-compiles to Linux and Windows without a toolchain.
+
+Other versions should work and are simply untested. If one genuinely cannot run
+the code, you will get a real error from Go or pip saying what is wrong, rather
+than a version check refusing to try.
+
+### What install.sh does
+
+That is the whole thing. It sets up Python, builds the program, downloads both
+models, and finishes by running a real forecast to prove it works.
+
+- **Takes a while the first time.** About 2.5 GB comes down: ~800 MB of Python
+  libraries and ~1.7 GB of model weights. Needs roughly 3 GB free. A clean install
+  measured 3 minutes here on a fast connection; budget longer on a slower one.
+- **Safe to run again.** Everything already done is skipped. If a download fails
+  halfway, run it a second time.
+- **The only thing it may install for you is `uv`** (the Python installer), and it
+  asks first and shows you where it comes from.
+- **Go is needed if you cloned this repository.** Prebuilt binaries are not kept
+  in version control, so `install.sh` builds from source. Install Go from
+  <https://go.dev/dl/> first; the installer says so and stops if it is missing.
+  A folder produced by `share.sh` carries prebuilt binaries in `dist/`, and those
+  are used automatically when Go is absent.
+
+If you would rather do it by hand:
+
+```bash
+uv venv models/.venv --python 3.11
+VIRTUAL_ENV=$PWD/models/.venv uv pip install -r models/requirements.txt
+go build -o predictmarketing .
+./predictmarketing setup
+```
+
+### Sharing this folder with someone else
+
+```bash
+./share.sh ~/Dropbox/predict-marketing
+```
+
+That makes a ~31 MB copy — the code, plus prebuilt programs in `dist/` for people
+without Go. It leaves out the Python environment, the model weights and your own
+databases, which is the 2.5 GB their `./install.sh` downloads fresh anyway.
+
+Hand them the folder. They open a terminal in it and run **one command**:
+
+```bash
+./install.sh
+```
+
+Run `./build-dist.sh` first if you have changed the code and want the prebuilt
+programs refreshed.
+
+**Windows:** the program builds and runs, but `install.sh` is a shell script, so
+use the by-hand steps above (they work in PowerShell with small changes) or run
+it under WSL.
+
+### Your first forecast
+
+The installer finishes by telling you to run this, and it is the right next step
+— it forecasts a file that ships with the project, so it works before you have
+any data of your own:
+
+```bash
+./predictmarketing forecast testdata/example.csv -model chronos2 -horizon 7
+```
+
+It prints the next seven days and writes `testdata/example_forecast_chronos2.html`.
+Open that file in a browser: chart, numbers, and a record of exactly which model
+and which weights produced them.
+
+Then try the one with campaigns in it, which is what the tool is actually for:
+
+```bash
+./predictmarketing forecast examples/05-campaigns.csv -horizon 7
+```
+
+That forecasts each campaign **and** the account total, and tells you which
+columns it forecast, which it only stored, and which campaigns it left out.
+
+When you are ready for your own numbers, **Using it** below covers the file
+format, and `./predictmarketing --help` lists every option.
+
 ## Commands
 
 | | |
@@ -406,110 +536,6 @@ has to, the design has sprung a leak.
 Each worker announces itself on startup: which weights, which versions, whether
 it accepts known-future values. Go asks rather than assumes, and stores that
 announcement with every forecast, so any saved number can name what produced it.
-
-## Installing
-
-### Getting it
-
-```bash
-git clone https://github.com/eliquid/predict-marketing-forecasting.git
-cd predict-marketing-forecasting
-./install.sh
-```
-
-If someone sent you a folder instead of a link, skip the clone and run
-`./install.sh` from inside it.
-
-**`go install` will not work, and that is not a bug.** The models are Python and
-their weights are 1.7 GB, so the program needs the `models/` folder sitting next
-to it. A lone binary in `~/go/bin` has nothing to run and says so. Clone the
-repository instead.
-
-### Versions
-
-Tested on these. **Nothing here is pinned to them** — the installer does not
-compare version numbers against a hardcoded list, and neither newer nor slightly
-older versions are refused.
-
-| | Tested with | Required |
-|---|---|---|
-| Go | 1.26.5 | 1.24 or newer (`go.mod`) — needed only if you build from source |
-| Python | 3.11.15 | 3.10 or newer; `install.sh` prefers 3.11 and accepts what you have |
-| SQLite | 3.50.4 | **none** — it is compiled into the program |
-
-Everything above, and every measurement quoted in this README, was run on:
-
-> **MacBook Pro (14-inch, 2021)** — Apple M1 Pro, 10 cores (8 performance,
-> 2 efficiency), 32 GB memory, macOS 26.1, arm64.
-
-That is the only machine it has been tested on. It is pure Go plus Python, with
-no platform-specific code, so Linux and Intel Macs should be fine — but "should"
-is doing real work in that sentence, and nobody has checked. Windows builds and
-runs the program, though `install.sh` is a shell script (see **Building**).
-
-Timings scale with the machine. A forecast takes three to four seconds here
-(3.1s and 3.9s on two consecutive runs of `testdata/example.csv`), almost all of
-it loading the model rather than predicting — so a slower disk shows up more
-than a slower CPU, and the horizon barely matters.
-
-**You do not need SQLite installed.** The database is `modernc.org/sqlite`, a
-pure-Go implementation built into the binary, so there is no system library to
-match, no CGo, and nothing to go out of step. That is also why the program
-cross-compiles to Linux and Windows without a toolchain.
-
-Other versions should work and are simply untested. If one genuinely cannot run
-the code, you will get a real error from Go or pip saying what is wrong, rather
-than a version check refusing to try.
-
-### What install.sh does
-
-That is the whole thing. It sets up Python, builds the program, downloads both
-models, and finishes by running a real forecast to prove it works.
-
-- **Takes a while the first time.** About 2.5 GB comes down: ~800 MB of Python
-  libraries and ~1.7 GB of model weights. Needs roughly 3 GB free. A clean install
-  measured 3 minutes here on a fast connection; budget longer on a slower one.
-- **Safe to run again.** Everything already done is skipped. If a download fails
-  halfway, run it a second time.
-- **The only thing it may install for you is `uv`** (the Python installer), and it
-  asks first and shows you where it comes from.
-- **Go is needed if you cloned this repository.** Prebuilt binaries are not kept
-  in version control, so `install.sh` builds from source. Install Go from
-  <https://go.dev/dl/> first; the installer says so and stops if it is missing.
-  A folder produced by `share.sh` carries prebuilt binaries in `dist/`, and those
-  are used automatically when Go is absent.
-
-If you would rather do it by hand:
-
-```bash
-uv venv models/.venv --python 3.11
-VIRTUAL_ENV=$PWD/models/.venv uv pip install -r models/requirements.txt
-go build -o predictmarketing .
-./predictmarketing setup
-```
-
-### Sharing this folder with someone else
-
-```bash
-./share.sh ~/Dropbox/predict-marketing
-```
-
-That makes a ~31 MB copy — the code, plus prebuilt programs in `dist/` for people
-without Go. It leaves out the Python environment, the model weights and your own
-databases, which is the 2.5 GB their `./install.sh` downloads fresh anyway.
-
-Hand them the folder. They open a terminal in it and run **one command**:
-
-```bash
-./install.sh
-```
-
-Run `./build-dist.sh` first if you have changed the code and want the prebuilt
-programs refreshed.
-
-**Windows:** the program builds and runs, but `install.sh` is a shell script, so
-use the by-hand steps above (they work in PowerShell with small changes) or run
-it under WSL.
 
 ## A note on htmx
 
