@@ -234,6 +234,37 @@ trust than Hugging Face does. **TimesFM has no mirror and cannot have one**; on 
 machine that cannot reach Hugging Face, `chronos2` will work and `timesfm3` will
 not.
 
+### The Hugging Face warning during install
+
+Installing prints this while the weights come down:
+
+```
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a
+HF_TOKEN to enable higher rate limits and faster downloads.
+```
+
+**Nothing is wrong, and you do not need an account.** Both models are public and
+ungated. The install that these instructions were tested against had no token set
+and downloaded all 1.8 GB anonymously without trouble.
+
+It matters only if your download is slow, stalls, or fails with a rate-limit
+error. Hugging Face limits anonymous traffic per IP address, so this is most
+likely on a shared or office connection, on CI, or if you install repeatedly.
+If that happens, create a free **read** token at
+<https://huggingface.co/settings/tokens> and set it before installing:
+
+```bash
+export HF_TOKEN=hf_...
+./install.sh
+```
+
+`models/fetch.py` passes no token of its own, so `huggingface_hub` picks up
+`HF_TOKEN` (or `HUGGING_FACE_HUB_TOKEN`) from the environment by itself. Nothing
+in this project stores, logs or transmits it anywhere else.
+
+If you are behind a proxy that blocks Hugging Face outright, a token will not
+help — see the mirror above.
+
 The third one is optional and trained on your own numbers:
 
 ```bash

@@ -62,6 +62,11 @@ Several things moved, so older notes may mislead:
   accuracy queries depend on. A database from an older schema is now refused with
   an explanation rather than failing later on `no such column: entity`.
 
+- Installing prints a **Hugging Face "unauthenticated requests" warning**. It is
+  expected, both models are public and ungated, and it is not a failure
+  (`AGENTS.md` §2). Do not add token handling to `models/fetch.py` to silence it —
+  `huggingface_hub` already reads `HF_TOKEN` from the environment.
+
 Columns are sorted into forecast / setting / rate / identifier / text by rule
 (`AGENTS.md` §4b), and the tool prints which rule it applied to each. When
 something is "missing" from a forecast, read that output before suspecting a bug.

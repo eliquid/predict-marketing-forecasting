@@ -20,7 +20,15 @@ wrong with the change, not with the rule.
    ```
 
 2. **Add the weights to `models/fetch.py`** — repo id and a pinned revision, in
-   the `MODELS` map. Then `./predictmarketing setup` to download and checksum them.
+   the `MODELS` map, and its expected sha256 in `EXPECTED`. Then
+   `./predictmarketing setup` to download and checksum them.
+
+   `setup` will print a Hugging Face **"unauthenticated requests"** warning. That
+   is expected for a public model and is not a failure — see `AGENTS.md` §2. Do
+   not add token handling to `models/fetch.py`: `huggingface_hub` already reads
+   `HF_TOKEN` from the environment. If the new model is **gated**, that is
+   different and worth saying out loud in the README, because every user will
+   then need their own Hugging Face account and token.
 
 3. **Copy a worker.** `models/chronos2_worker.py` if the model takes covariates,
    `models/timesfm3_worker.py` if it does not. Name it `<name>_worker.py`.
@@ -54,7 +62,7 @@ git diff --stat
 ```
 
 One new `.py` file, one changed line in `worker.go`, and entries in
-`fetch.py`/`requirements.txt`. **Any other changed Go file means the abstraction
+`models/fetch.py`/`requirements.txt`. **Any other changed Go file means the abstraction
 leaked** — find out why instead of accepting it.
 
 ## Then prove the model is real

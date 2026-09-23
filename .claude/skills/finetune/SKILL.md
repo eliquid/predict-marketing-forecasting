@@ -7,6 +7,10 @@ description: Train or retrain the chronos2ft LoRA adapter on the user's own data
 
 Read `AGENTS.md` §4c first — it holds the measured numbers and the leakage rule.
 
+The base Chronos-2 weights must already be installed (`./install.sh`). If you are
+re-running `setup` first, the Hugging Face "unauthenticated requests" warning it
+prints is expected and harmless — `AGENTS.md` §2 explains it.
+
 ## Train
 
 ```bash

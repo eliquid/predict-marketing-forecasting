@@ -34,10 +34,28 @@ published, through the adapter in `models/`.
 ./install.sh                # one-time setup: Python env, build, model weights (~2.5 GB)
                             # sets up chronos2 and timesfm3; chronos2ft needs YOUR data
 go build -o predictmarketing .
-go test ./...               # ~134 tests, about 30s
+go test ./...               # ~143 tests, about 30s
 go vet ./... && gofmt -l .  # must be silent
 ./predictmarketing forecast testdata/example.csv -model chronos2
 ```
+
+**The Hugging Face warning during install is expected.** `models/fetch.py` downloads
+anonymously and prints:
+
+```
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a
+HF_TOKEN to enable higher rate limits and faster downloads.
+```
+
+Both models are **public and ungated** — verified against the Hub API, and a
+clean install on an untouched machine pulled all 1.8 GB with no token set. Do not
+treat this warning as a failure, and do not add token handling to `models/fetch.py` to
+silence it: `huggingface_hub` already reads `HF_TOKEN` and
+`HUGGING_FACE_HUB_TOKEN` from the environment on its own, so
+`export HF_TOKEN=... && ./install.sh` works with no code change. A token helps
+only against per-IP rate limits (shared connections, CI, repeated installs); it
+does nothing if Hugging Face is blocked outright, which is what the Chronos-2
+mirror in Releases is for.
 
 Commands: `setup`, `models`, `forecast`, `runs`, `accuracy`.
 

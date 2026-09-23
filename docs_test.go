@@ -261,3 +261,47 @@ func TestVersionReports(t *testing.T) {
 		t.Error("the help does not mention the version command")
 	}
 }
+
+// Installing prints a Hugging Face "unauthenticated requests" warning. It is
+// expected — both models are public and ungated, and a clean install pulled all
+// 1.8 GB with no token — but it looks like a failure mid-install, so every file
+// someone might consult has to say so.
+func TestHuggingFaceWarningIsDocumented(t *testing.T) {
+	for _, f := range []string{
+		"README.md",
+		"AGENTS.md",
+		"CLAUDE.md",
+		".claude/skills/add-a-model/SKILL.md",
+		".claude/skills/finetune/SKILL.md",
+	} {
+		b, err := os.ReadFile(f)
+		if err != nil {
+			t.Errorf("%s: %v", f, err)
+			continue
+		}
+		if !strings.Contains(string(b), "unauthenticated") {
+			t.Errorf("%s does not mention the Hugging Face unauthenticated warning", f)
+		}
+	}
+
+	// The README has to tell a reader what to actually do about it.
+	b, err := os.ReadFile("README.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"HF_TOKEN", "ungated", "rate-limit"} {
+		if !strings.Contains(string(b), want) {
+			t.Errorf("README does not explain %q", want)
+		}
+	}
+
+	// And fetch.py must keep passing no token, which is what makes the env var work.
+	f, err := os.ReadFile(filepath.Join("models", "fetch.py"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(f), "token=") {
+		t.Error("fetch.py now passes a token explicitly; HF_TOKEN from the " +
+			"environment may no longer be honoured, and the docs say it is")
+	}
+}
