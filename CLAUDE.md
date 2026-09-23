@@ -80,6 +80,9 @@ Several things moved, so older notes may mislead:
 - **Never put a time limit on training.** A `--budget` wall clock silently cut a
   real run to 1,210 of 2,000 steps and the resulting adapter looked finished in
   every report. Removed everywhere; lower `--steps` instead (`AGENTS.md` §2c).
+- **Never put the chart readout inside the scroller.** It scrolls away with the
+  content and shows nothing, and a synthetic mousemove in a test will not catch
+  it — check it in a browser.
 - **The comparison chart is fixed-width inside a scroller, not scaled to fit.**
   That is what makes the crosshair possible; scaling it would break the
   coordinate mapping (`AGENTS.md` §2c).

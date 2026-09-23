@@ -80,30 +80,39 @@ var compareTmpl = template.Must(template.New("compare").Parse(`<!doctype html>
   .scroller::-webkit-scrollbar-thumb { background:var(--faint); border-radius:6px; }
   .chart { display:block; }
   .fcband { fill:#ffffff06; }
-  .cross-v { stroke:var(--accent); stroke-width:1; stroke-dasharray:3 3; }
-  .readout { position:absolute; top:10px; pointer-events:none; z-index:3;
-             background:var(--panel2); border:1px solid var(--accent);
-             border-radius:5px; padding:9px 12px; font-size:12px;
-             white-space:nowrap; box-shadow:0 6px 22px #0008; display:none; }
-  .readout .rday { color:var(--muted); font-size:10.5px; letter-spacing:.11em;
-                   text-transform:uppercase; margin-bottom:6px; }
-  .readout .rrow { display:flex; gap:10px; justify-content:space-between; }
-  .readout .rname { display:inline-flex; align-items:center; gap:7px; }
-  .readout .rval { font-weight:700; }
+  .cross-v { stroke:var(--accent); stroke-width:1.5; stroke-dasharray:4 3; }
+  .cross-dots circle { stroke:var(--bg); stroke-width:2; }
+  /* Sits above the chart, not inside the scroller: anything absolutely
+     positioned in a scrolling box scrolls away with the content. */
+  .readout { display:flex; gap:20px; flex-wrap:wrap; align-items:baseline;
+             background:var(--panel2); border:1px solid var(--line);
+             border-radius:5px; padding:10px 14px; margin:0 0 10px;
+             min-height:42px; font-size:12.5px; }
+  .readout .rday { color:var(--accent); font-weight:700; letter-spacing:.08em; }
+  .readout .rrow { display:inline-flex; align-items:center; gap:8px; }
+  .readout .rval { font-weight:700; font-variant-numeric:tabular-nums; }
+  .readout .rmuted { color:var(--faint); }
   .hint { color:var(--faint); font-size:11px; margin:6px 0 0; }
   .grid  { stroke:var(--line); stroke-width:1; }
   .hist  { fill:none; stroke:var(--hist); stroke-width:2; stroke-linejoin:round; }
   .split { stroke:var(--faint); stroke-width:1; stroke-dasharray:3 4; }
   .ylab  { fill:var(--muted); font:11.5px var(--mono); }
   .xlab  { fill:var(--faint); font:11px var(--mono); text-anchor:middle; }
-  .inline-label { font:12.5px var(--mono); text-anchor:end; }
+  /* Anchored at the start because the label is drawn to the right of the line's
+     last point, in the right-hand margin the value labels also live in. */
+  .inline-label { font:12.5px var(--mono); text-anchor:start; }
   .hist-label { fill:var(--muted); text-anchor:middle; }
   .split-label { fill:var(--muted); font:11.5px var(--mono); }
 
   .legend { display:flex; gap:10px; flex-wrap:wrap; margin:4px 0 22px; }
-  .legend span { display:inline-flex; align-items:center; gap:8px; font-size:11.5px;
-                 color:var(--muted); background:var(--panel); padding:6px 11px;
-                 border:1px solid var(--line); border-radius:4px; }
+  .legend .key { display:inline-flex; align-items:center; gap:8px; font:inherit;
+                 font-size:11.5px; color:var(--fg); background:var(--panel2);
+                 padding:6px 11px; border:1px solid var(--line); border-radius:4px;
+                 cursor:pointer; }
+  .legend .key:hover { border-color:var(--accent); }
+  .legend .key[aria-pressed="false"] { color:var(--faint); opacity:.5;
+                                       text-decoration:line-through; }
+  .legend { margin:0 0 10px; }
   .swatch { width:20px; height:0; border-top-width:3px; border-top-style:solid;
             display:inline-block; }
 
@@ -150,12 +159,6 @@ var compareTmpl = template.Must(template.New("compare").Parse(`<!doctype html>
   </div>
   {{end}}
 
-  <div class="legend">
-    <span><i class="swatch" style="border-top-color:var(--hist)"></i>actual</span>
-    {{range .Models}}
-    <span><i class="swatch" style="border-top-color:{{.Colour}};border-top-style:{{.Stroke}}"></i>{{.Name}}{{if .IsFineTuned}} · fine-tuned{{end}}</span>
-    {{end}}
-  </div>
 
   {{range .Panes}}
   <section class="pane" data-entity="{{.Entity}}" data-metric="{{.Metric}}">
@@ -170,11 +173,24 @@ var compareTmpl = template.Must(template.New("compare").Parse(`<!doctype html>
     </div>
     <div class="plot">
       <div class="cap">{{.Entity}} · {{.Metric}}</div>
-      <div class="scroller">
-        {{.Chart}}
-        <div class="readout"></div>
+
+      <div class="legend" role="group" aria-label="show or hide a series">
+        <button type="button" class="key" data-model="__actual" aria-pressed="true">
+          <i class="swatch" style="border-top-color:var(--hist)"></i>actual
+        </button>
+        {{range $.Models}}
+        <button type="button" class="key" data-model="{{.Name}}" aria-pressed="true">
+          <i class="swatch" style="border-top-color:{{.Colour}};border-top-style:{{.Stroke}}"></i>{{.Name}}{{if .IsFineTuned}} · fine-tuned{{end}}
+        </button>
+        {{end}}
       </div>
-      <p class="hint">Move across the chart to read every model at one day · scroll left for older days</p>
+
+      <div class="readout" aria-live="polite">
+        <span class="rday">move across the chart to read a day</span>
+      </div>
+
+      <div class="scroller">{{.Chart}}</div>
+      <p class="hint">Scroll left for older days · click a name above to hide that line</p>
       <script type="application/json" class="pane-data">{{.Data}}</script>
     </div>
     <table>
@@ -256,9 +272,15 @@ var compareTmpl = template.Must(template.New("compare").Parse(`<!doctype html>
   metric.addEventListener('change', show);
   refreshMetrics();
 
-  // Crosshair. The chart is drawn at a fixed pixel width, so a pointer position
-  // inside the svg is already a chart coordinate -- no projection to redo here,
-  // which is the whole reason the x of every day is handed over in the JSON.
+  // Crosshair and legend.
+  //
+  // The chart is drawn at a fixed pixel width, so a pointer position inside the
+  // svg is already a chart coordinate -- that is why every day's x is handed over
+  // in the JSON rather than re-derived here.
+  //
+  // The readout lives above the chart, not floating inside it: anything
+  // absolutely positioned inside a scrolling box scrolls away with the content,
+  // which is exactly how the first version managed to show nothing.
   function money(v) {
     var a = Math.abs(v);
     if (a >= 1000) return v.toLocaleString(undefined, {maximumFractionDigits: 0});
@@ -271,6 +293,7 @@ var compareTmpl = template.Must(template.New("compare").Parse(`<!doctype html>
     var svg    = pane.querySelector('svg.chart');
     var box    = pane.querySelector('.readout');
     var scr    = pane.querySelector('.scroller');
+    var keys   = Array.prototype.slice.call(pane.querySelectorAll('.key'));
     if (!holder || !svg || !box || !scr) return;
 
     var d;
@@ -279,6 +302,11 @@ var compareTmpl = template.Must(template.New("compare").Parse(`<!doctype html>
 
     var cross = svg.querySelector('.cross');
     var vline = svg.querySelector('.cross-v');
+    var dots  = svg.querySelector('.cross-dots');
+    var hidden = {};
+    var pinned = null;          // a clicked day stays put until clicked again
+
+    function visible(model) { return !hidden[model]; }
 
     function nearest(x) {
       var best = 0, gap = Infinity;
@@ -289,31 +317,37 @@ var compareTmpl = template.Must(template.New("compare").Parse(`<!doctype html>
       return best;
     }
 
-    function render(i) {
-      var rows = '<div class="rday">' + d.days[i] + '</div>';
+    // y for a value, taken from the chart's own scale so the markers land on the
+    // lines rather than near them.
+    var yTop = d.y0, ySpan = d.y1 - d.y0;
+    function yOf(v) { return d.top + (d.bottom - d.top) * (1 - (v - yTop) / ySpan); }
+
+    function readAt(i) {
+      var parts = ['<span class="rday">' + d.days[i] + '</span>'];
+      var marks = '';
+
       if (i < d.cut) {
-        rows += '<div class="rrow"><span class="rname">' +
-                '<i class="swatch" style="border-top-color:var(--hist)"></i>actual</span>' +
-                '<span class="rval">' + money(d.actual[i]) + '</span></div>';
+        if (visible('__actual')) {
+          parts.push('<span class="rrow"><i class="swatch" style="border-top-color:var(--hist)"></i>' +
+                     'actual <span class="rval">' + money(d.actual[i]) + '</span></span>');
+          marks += '<circle cx="' + d.xs[i] + '" cy="' + yOf(d.actual[i]) +
+                   '" r="5" fill="var(--hist)"/>';
+        }
+        parts.push('<span class="rmuted">observed</span>');
       } else {
         var k = i - d.cut;
         d.lines.forEach(function (ln) {
-          if (k >= ln.values.length) return;
-          rows += '<div class="rrow"><span class="rname">' +
-                  '<i class="swatch" style="border-top-color:' + ln.colour + '"></i>' +
-                  ln.model + '</span><span class="rval">' + money(ln.values[k]) + '</span></div>';
+          if (k >= ln.values.length || !visible(ln.model)) return;
+          parts.push('<span class="rrow"><i class="swatch" style="border-top-color:' + ln.colour +
+                     '"></i>' + ln.model + ' <span class="rval">' + money(ln.values[k]) + '</span></span>');
+          marks += '<circle cx="' + d.xs[i] + '" cy="' + yOf(ln.values[k]) +
+                   '" r="5" fill="' + ln.colour + '"/>';
         });
+        parts.push('<span class="rmuted">forecast</span>');
       }
-      box.innerHTML = rows;
-      box.style.display = 'block';
 
-      // keep the readout beside the crosshair and inside the visible strip
-      var left = d.xs[i] - scr.scrollLeft + 16;
-      if (left + box.offsetWidth > scr.clientWidth - 8) {
-        left = d.xs[i] - scr.scrollLeft - box.offsetWidth - 16;
-      }
-      box.style.left = Math.max(8, left) + 'px';
-
+      box.innerHTML = parts.join('');
+      dots.innerHTML = marks;
       vline.setAttribute('x1', d.xs[i]);
       vline.setAttribute('x2', d.xs[i]);
       cross.style.display = '';
@@ -322,18 +356,42 @@ var compareTmpl = template.Must(template.New("compare").Parse(`<!doctype html>
     function fromEvent(ev) {
       var r = svg.getBoundingClientRect();
       var x = (ev.touches ? ev.touches[0].clientX : ev.clientX) - r.left;
-      render(nearest(x * (svg.viewBox.baseVal.width / r.width)));
+      return nearest(x * (svg.viewBox.baseVal.width / r.width));
     }
 
-    svg.addEventListener('mousemove', fromEvent);
-    svg.addEventListener('touchmove', fromEvent, {passive: true});
+    svg.addEventListener('mousemove', function (ev) {
+      if (pinned !== null) return;
+      readAt(fromEvent(ev));
+    });
+    svg.addEventListener('touchmove', function (ev) { readAt(fromEvent(ev)); }, {passive: true});
+    svg.addEventListener('click', function (ev) {
+      var i = fromEvent(ev);
+      pinned = (pinned === i) ? null : i;
+      readAt(i);
+    });
     svg.addEventListener('mouseleave', function () {
-      box.style.display = 'none';
+      if (pinned !== null) return;
+      box.innerHTML = '<span class="rday">move across the chart to read a day</span>';
+      dots.innerHTML = '';
       cross.style.display = 'none';
     });
 
-    // Open on the forecast, which is what the page is for, and leave the
-    // history one scroll to the left.
+    // Legend: click a name to take that line off the chart, the readout and the
+    // end labels together.
+    keys.forEach(function (key) {
+      key.addEventListener('click', function () {
+        var model = key.dataset.model;
+        hidden[model] = !hidden[model];
+        key.setAttribute('aria-pressed', hidden[model] ? 'false' : 'true');
+        pane.querySelectorAll('[data-model="' + model + '"]').forEach(function (el) {
+          if (el.classList.contains('key')) return;
+          el.style.display = hidden[model] ? 'none' : '';
+        });
+        if (pinned !== null) readAt(pinned);
+      });
+    });
+
+    // Open on the forecast; the history is one scroll to the left.
     requestAnimationFrame(function () { scr.scrollLeft = scr.scrollWidth; });
   });
 })();

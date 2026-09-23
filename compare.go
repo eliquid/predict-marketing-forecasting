@@ -408,11 +408,15 @@ func drawCompareChart(history []Point, days []string, lines []modelLine, show in
 		fmt.Fprintf(&b, `<text x="%g" y="%g" class="split-label">forecast from here</text>`, xd+9, padT+4)
 	}
 
+	// Each series is its own group, tagged with the model it belongs to, so the
+	// legend can show and hide it without the page knowing anything about how the
+	// chart was drawn.
+	b.WriteString(`<g class="series" data-model="__actual">`)
 	b.WriteString(`<polyline class="hist" points="`)
 	for i, p := range history {
 		fmt.Fprintf(&b, "%g,%g ", xs[i], y(p.Value))
 	}
-	b.WriteString(`"/>`)
+	b.WriteString(`"/></g>`)
 
 	var ends []lineEnd
 	for li, ln := range lines {
@@ -420,6 +424,7 @@ func drawCompareChart(history []Point, days []string, lines []modelLine, show in
 		if li > 0 {
 			dash = fmt.Sprintf(` stroke-dasharray="%s"`, dashFor(li))
 		}
+		fmt.Fprintf(&b, `<g class="series" data-model="%s">`, template.HTMLEscapeString(ln.Model))
 		fmt.Fprintf(&b, `<polyline fill="none" stroke="%s" stroke-width="2.5" `+
 			`stroke-linejoin="round" stroke-linecap="round"%s points="`, ln.Colour, dash)
 		if len(history) > 0 {
@@ -427,26 +432,30 @@ func drawCompareChart(history []Point, days []string, lines []modelLine, show in
 		}
 		for i, v := range ln.Median {
 			fmt.Fprintf(&b, "%g,%g ", xs[len(history)+i], y(v))
-			fmt.Fprintf(&b, `" /><circle cx="%g" cy="%g" r="3" fill="%s"/><polyline fill="none" `+
-				`stroke="%s" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"%s points="`,
-				xs[len(history)+i], y(v), ln.Colour, ln.Colour, dash)
-			fmt.Fprintf(&b, "%g,%g ", xs[len(history)+i], y(v))
 		}
 		b.WriteString(`"/>`)
-
-		if len(ln.Median) > 0 {
-			ex, ey := xs[n-1], y(ln.Median[len(ln.Median)-1])
-			ends = append(ends, lineEnd{x: ex, y: ey, colour: ln.Colour, name: ln.Model})
+		// a point per forecast day: the days are what you click between
+		for i, v := range ln.Median {
+			fmt.Fprintf(&b, `<circle cx="%g" cy="%g" r="3.5" fill="%s"/>`,
+				xs[len(history)+i], y(v), ln.Colour)
 		}
+		if len(ln.Median) > 0 {
+			ends = append(ends, lineEnd{
+				x: xs[n-1], y: y(ln.Median[len(ln.Median)-1]),
+				colour: ln.Colour, name: ln.Model,
+			})
+		}
+		b.WriteString(`</g>`)
 	}
 	for _, e := range spreadLabels(ends, 17, padT, h-padB) {
-		fmt.Fprintf(&b, `<text x="%g" y="%g" class="inline-label" fill="%s">%s</text>`,
+		fmt.Fprintf(&b, `<g class="series-label" data-model="%s">`, template.HTMLEscapeString(e.name))
+		fmt.Fprintf(&b, `<text x="%g" y="%g" class="inline-label" fill="%s">%s</text></g>`,
 			e.x+8, e.labelY, e.colour, template.HTMLEscapeString(e.name))
 	}
 
-	// The crosshair layer is drawn by the page; it needs somewhere to put it.
+	// The crosshair layer: a rule the page moves, and markers it fills in.
 	fmt.Fprintf(&b, `<g class="cross" style="display:none">`+
-		`<line class="cross-v" y1="%g" y2="%g"/></g>`, padT-8, h-padB)
+		`<line class="cross-v" y1="%g" y2="%g"/><g class="cross-dots"></g></g>`, padT-8, h-padB)
 	b.WriteString(`</svg>`)
 
 	// Everything the crosshair needs, so the projection is never re-derived.
@@ -477,6 +486,9 @@ func drawCompareChart(history []Point, days []string, lines []modelLine, show in
 	}
 	j.WriteString(`],"cut":`)
 	fmt.Fprintf(&j, "%d", len(history))
+	// The y projection, so the crosshair markers land on the lines rather than
+	// near them. Same numbers the drawing used.
+	fmt.Fprintf(&j, `,"y0":%.6f,"y1":%.6f,"top":%.1f,"bottom":%.1f`, lo, hi, padT, h-padB)
 	j.WriteString(`,"lines":[`)
 	for li, ln := range lines {
 		if li > 0 {

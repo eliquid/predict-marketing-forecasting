@@ -271,9 +271,15 @@ ends up a few pixels wide with every line piled on the others. The chart opens o
 the forecast and **scrolls left through the whole history**, as far back as your
 data goes.
 
-**Move the pointer across it** and a crosshair reads every model at that day:
-the date, and each model's number, or the actual figure if you are back in the
-observed part.
+**Move the pointer across it** and a crosshair reads that day out above the
+chart: the date, then every model's number with a dot on each line, or the
+actual figure if you are back in the observed part. **Click** to pin a day so it
+stays while you look; click again to release.
+
+**The legend is a set of switches.** Click `actual`, `chronos2`, `timesfm3` or
+`chronos2ft` to take that line off the chart — it disappears from the plot, its
+end label, and the readout together. Useful when two models sit on top of each
+other and you want to see one of them.
 
 Two dropdowns choose what you are looking at:
 

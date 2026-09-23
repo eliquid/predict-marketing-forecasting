@@ -39,6 +39,8 @@ func main() {
 		err = cmdModels()
 	case "import":
 		err = cmdImport(os.Args[2:])
+	case "report":
+		err = cmdReport(os.Args[2:])
 	case "forecast":
 		err = cmdForecast(os.Args[2:])
 	case "runs":
@@ -70,6 +72,7 @@ func usageTo(w io.Writer) {
   setup                          download model weights and verify them
   models                         show each model and what it can do
   import [options]               read new CSVs from data/, forecast with every model
+  report [options]               redraw the reports from what is already stored
   forecast FILE.csv [options]    forecast a CSV of date,value rows
   runs                           list past forecasts
   accuracy                       compare past forecasts with what actually happened
@@ -94,6 +97,12 @@ import options:
   -history N      days of past data drawn on the charts (0, the default, is all
                   of them -- the chart scrolls)
   -no-finetune    write only the first report, skipping the trained model
+  -db FILE        database file (default: pm.db)
+
+report options:
+  -series NAME    which dataset (default: every one with forecasts)
+  -history N      days of past data drawn on the charts (0, the default, is all)
+  -data DIR       folder whose reports/ to write into (default data)
   -db FILE        database file (default: pm.db)
 
 accuracy options:

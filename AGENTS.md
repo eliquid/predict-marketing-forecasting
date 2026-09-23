@@ -127,6 +127,13 @@ coordinate, which is how the crosshair finds the day without re-deriving the
 projection in JavaScript. `drawCompareChart` returns the drawing **and** the
 series as JSON for exactly that reason.
 
+Each series is drawn inside `<g class="series" data-model="...">`, and the end
+labels inside `<g class="series-label" data-model="...">`, so the legend hides a
+line, its markers and its label with one selector and no knowledge of the
+drawing. The **readout sits above the chart, outside the scroller**: the first
+version put it inside, where it scrolled away with the content and showed
+nothing, while a synthetic mousemove in a test found it perfectly.
+
 `-history 0` (the import default) draws every day there is. Scrolling back is
 only useful if there is something behind you.
 

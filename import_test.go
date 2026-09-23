@@ -469,3 +469,56 @@ func TestTrainingIsNeverTimeLimited(t *testing.T) {
 		t.Error("import.go no longer tells the trainer how many steps to run")
 	}
 }
+
+// The first crosshair put its readout inside the scrolling container, so it
+// scrolled off with the content and showed nothing in practice while looking
+// fine to a synthetic mousemove. It has to live outside the scroller, and every
+// series has to be addressable so the legend can hide it.
+func TestChartIsInteractive(t *testing.T) {
+	entities := []string{AccountEntity, "Brand"}
+	metrics := []string{"Cost"}
+	data, days := comparisonFixture(t, entities, metrics)
+	runs := []forecastRun{
+		fakeRun("chronos2", entities, metrics, len(days), 100, ""),
+		fakeRun("timesfm3", entities, metrics, len(days), 200, ""),
+	}
+	path := filepath.Join(t.TempDir(), "c.html")
+	if err := writeComparison(path, runs, data, days, 0); err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	page := string(b)
+
+	// The readout must come before the scroller, i.e. not be nested in it.
+	ro, sc := strings.Index(page, `class="readout"`), strings.Index(page, `class="scroller"`)
+	if ro < 0 || sc < 0 {
+		t.Fatal("the page has no readout or no scroller")
+	}
+	if ro > sc {
+		t.Error("the readout is inside the scroller again; it will scroll out of view")
+	}
+
+	// Every series, including the observed history, is togglable by name.
+	for _, model := range []string{"__actual", "chronos2", "timesfm3"} {
+		if !strings.Contains(page, `data-model="`+model+`"`) {
+			t.Errorf("no element tagged for series %q", model)
+		}
+		if !strings.Contains(page, `class="key" data-model="`+model+`"`) {
+			t.Errorf("no legend button for series %q", model)
+		}
+	}
+
+	// The crosshair needs the y projection to put markers on the lines.
+	for _, key := range []string{`"y0":`, `"y1":`, `"top":`, `"bottom":`, `"xs":`, `"cut":`} {
+		if !strings.Contains(page, key) {
+			t.Errorf("the series data is missing %s", key)
+		}
+	}
+	// A fixed pixel width is what makes pointer position a chart coordinate.
+	if !strings.Contains(page, `<svg width="`) {
+		t.Error("the chart is no longer emitted at a fixed width; the crosshair maths will not hold")
+	}
+}
