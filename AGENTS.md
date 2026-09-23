@@ -104,6 +104,30 @@ The account and the campaigns are forecast **independently**, so their totals
 will not match exactly. On the real file they agree to within 1–4%, which is a
 useful sanity check rather than a guarantee.
 
+## 2b. What a first run looks like
+
+Verified by cloning the published repository onto a clean path and installing it
+with no fixes applied. Three things look like faults and are not, so do not
+"repair" them:
+
+| What appears | Why |
+|---|---|
+| `Loading weights: 0%\|...` on every model command | the model library, on **stderr**. stdout carries the JSON protocol, so nothing else may print there. `2>/dev/null` gives clean output. |
+| Reports and `pm.db` created `0600` | they name real campaigns and spend. Sharing stays deliberate (§4a). |
+| A Hugging Face "unauthenticated requests" warning | expected for a public model (§2). |
+
+Running the tool leaves generated files in the folder — a report per forecast and
+`pm.db`. All are gitignored. To clear them:
+
+```bash
+find . -name '*_forecast_*.html' -not -path './models/*' -delete
+find . -name 'pm.db*' -o -name 'walkthrough.db*' | xargs rm -f
+```
+
+`find`, not `rm *.html`: zsh fails a whole command when a glob matches nothing
+and bash does not, and macOS defaults to zsh. Deleting `pm.db` discards every
+stored forecast, which is what `accuracy` scores against.
+
 ## 3. Repository map
 
 ```

@@ -190,6 +190,54 @@ of your data while still producing a confident-looking forecast:
 
 Fill missing days in your data — a real `0` is fine — rather than leaving them out.
 
+## Things that look wrong but are not
+
+Three things surprise people on a first run. All three are deliberate.
+
+**A progress bar on every command.** Every run that touches a model prints:
+
+```
+Loading weights:   0%|          | 0/170 [00:00<?, ?it/s]Loading weights: 100%|...
+```
+
+That is the model library loading, and it goes to **stderr**, not stdout. The
+program's own output is clean, so piping or redirecting gives you tidy text:
+
+```bash
+./predictmarketing models 2>/dev/null        # just the models
+./predictmarketing forecast data.csv 2>/dev/null > forecast.txt
+```
+
+stdout is reserved for the program, because the models talk to it over a JSON
+protocol on that same stream — a stray print there would corrupt a forecast.
+
+**Reports and the database are created private (`0600`).** They name real
+campaigns and what they spend, so only your user account can read them. Sharing
+one stays a deliberate act. If you need to serve a report from a web directory
+or hand it to another account, change it yourself:
+
+```bash
+chmod 644 data_forecast_chronos2.html
+```
+
+**Running it leaves files behind.** Each forecast writes a report next to the
+CSV and appends to `pm.db`. Nothing is hidden and nothing goes into git — they
+are all ignored — but the folder does accumulate. To clear the generated files
+and start fresh:
+
+```bash
+find . -name '*_forecast_*.html' -not -path './models/*' -delete
+find . -name 'pm.db*' -o -name 'walkthrough.db*' | xargs rm -f
+```
+
+`find` rather than `rm *.html` on purpose: zsh, which macOS uses by default,
+fails the whole command when a pattern matches nothing, and bash does not. The
+form above behaves the same in both.
+
+Deleting `pm.db` throws away every stored forecast, which is what `accuracy`
+scores against. The installed models and Python environment are untouched by
+the above.
+
 ## The models
 
 | | TimesFM 3.0 | Chronos-2 | Chronos-2 fine-tuned |

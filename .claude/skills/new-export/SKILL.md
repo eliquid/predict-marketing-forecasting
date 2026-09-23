@@ -90,3 +90,13 @@ FROM raw
 WHERE source='Google Ads' AND json_extract(data,'$."Campaign status"')='Enabled'
 ORDER BY day DESC LIMIT 20;
 ```
+
+## Afterwards
+
+Each run leaves a report next to the CSV and appends to `pm.db`. Both are
+gitignored, and `pm.db` is what `accuracy` scores against, so keep it. Clear only
+the reports when they pile up:
+
+```bash
+find . -name '*_forecast_*.html' -not -path './models/*' -delete
+```

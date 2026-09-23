@@ -305,3 +305,41 @@ func TestHuggingFaceWarningIsDocumented(t *testing.T) {
 			"environment may no longer be honoured, and the docs say it is")
 	}
 }
+
+// Three things on a first run look like faults and are not: the progress bar on
+// stderr, the 0600 file mode, and the Hugging Face warning. All three were found
+// by installing the published repository on a clean path, and all three have to
+// be written down or the next person files them as bugs.
+func TestFirstRunSurprisesAreDocumented(t *testing.T) {
+	readme, err := os.ReadFile("README.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"Loading weights", // the progress bar, quoted so it is searchable
+		"stderr",          // where it goes
+		"0600",            // the file mode
+		"unauthenticated", // the Hugging Face warning
+	} {
+		if !strings.Contains(string(readme), want) {
+			t.Errorf("README does not cover %q", want)
+		}
+	}
+
+	agents, err := os.ReadFile("AGENTS.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(agents), "What a first run looks like") {
+		t.Error("AGENTS.md has no first-run section")
+	}
+
+	// The cleanup instructions must use find, not a bare glob: zsh fails a whole
+	// command when a pattern matches nothing, and macOS defaults to zsh.
+	for _, f := range []string{"README.md", "AGENTS.md"} {
+		b, _ := os.ReadFile(f)
+		if strings.Contains(string(b), "rm -f *_forecast_*.html") {
+			t.Errorf("%s tells people to run a bare glob that fails under zsh", f)
+		}
+	}
+}
