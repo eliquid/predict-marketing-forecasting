@@ -397,6 +397,52 @@ func TestImportWorkflowIsDocumented(t *testing.T) {
 	}
 }
 
+// `report` redraws the comparison pages from runs already stored, reading only.
+// It is easy to lose from the docs because it does nothing visible to the data,
+// and someone who cannot find it re-imports instead -- which retrains the third
+// model, takes minutes, and gives different numbers to look at. Its one fidelity
+// limit, the lost `%` sign, has to be written down beside it or a redrawn report
+// reads as a bug.
+func TestReportCommandIsDocumented(t *testing.T) {
+	for _, c := range []struct {
+		file  string
+		wants []string
+	}{
+		{"README.md", []string{
+			"predictmarketing report", "data/reports", "`%` sign",
+		}},
+		{"AGENTS.md", []string{
+			"rerender.go", "storedSeries", "latestRuns", "`%` sign",
+		}},
+		{"CLAUDE.md", []string{"rerender.go", "`%` sign"}},
+		{".claude/skills/new-export/SKILL.md", []string{
+			"predictmarketing report", "`%` sign",
+		}},
+		{".claude/skills/verify/SKILL.md", []string{
+			"predictmarketing report", "`%` sign",
+		}},
+	} {
+		b, err := os.ReadFile(c.file)
+		if err != nil {
+			t.Errorf("%s: %v", c.file, err)
+			continue
+		}
+		for _, w := range c.wants {
+			if !strings.Contains(string(b), w) {
+				t.Errorf("%s does not document the report command's %q", c.file, w)
+			}
+		}
+	}
+
+	// Every doc above says it reads only. The help has to offer the command at
+	// all, or nobody reaches those docs from the command line.
+	var help strings.Builder
+	usageTo(&help)
+	if !strings.Contains(help.String(), "\n  report [options]") {
+		t.Error("the help does not list the report command")
+	}
+}
+
 // The wrong download is the most common reason a real export will not load: the
 // Excel option is UTF-16 and tab-separated despite its .csv name. Every file
 // someone might consult has to say which download to take.

@@ -139,6 +139,27 @@ browser. Check in the browser console that the chart scrolls
 a `mousemove` over the svg fills the readout — on a forecast day with every
 model, and on a history day with the actual.
 
+A synthetic `mousemove` is not enough on its own. The first crosshair put the
+readout **inside** the scroller, where it scrolled out of sight with the content
+and showed the user nothing, while exactly that kind of test found it in the DOM
+and passed. Look at the page.
+
+### Iterating on the drawing: `report`, not `import`
+
+Once one import has stored its runs, do not import again to see a chart change.
+
+```bash
+(cd /tmp/v && /path/to/predictmarketing report)
+```
+
+It redraws `data/reports/` from the database — nothing read, nothing forecast,
+nothing retrained, nothing written (`AGENTS.md` §2c). Two things to check after
+touching it:
+
+- it refuses cleanly on a database with no stored runs, naming `import`
+- a rate loses its `%` sign, and only that; if a *number* differs from the page
+  `import` wrote, the rebuild in `rebuildData` is wrong, not the renderer
+
 ## Paths must not follow the shell
 
 `models/`, `data/` and `pm.db` all resolve relative to the **installation**, never

@@ -30,6 +30,18 @@ history is required; 365 is better, 730 best. See `AGENTS.md` §2c.
 The steps below are the manual equivalent, for when you want one model, one
 metric, or a horizon the import does not use.
 
+## If you only want the reports back
+
+```bash
+./predictmarketing report
+```
+
+That redraws `data/reports/` from what is already in `pm.db` — no CSV is read,
+nothing is forecast and nothing is retrained. Reach for it when a report has been
+deleted or the drawing has changed, and keep `import` for a new export. A rate
+comes back without its `%` sign; re-importing is what restores that. See
+`AGENTS.md` §2c.
+
 Read `AGENTS.md` §2a for how a campaign export is read, and §4a for what the
 database holds.
 

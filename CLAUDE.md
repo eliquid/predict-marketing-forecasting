@@ -89,6 +89,11 @@ Several things moved, so older notes may mislead:
 - **`import` is the recurring job now** (`AGENTS.md` §2c): `data/` in,
   two comparison reports out, CSV filed into `data/imported/`. It refuses under
   90 days. `forecast` is still the single-model command underneath it.
+- **`report` redraws the pages from stored runs** (`rerender.go`, `AGENTS.md`
+  §2c). It reads only: no CSV, no forecast, no retrain, no write to the
+  database. Use it when you have changed how a chart is drawn — re-importing to
+  look at a drawing costs the fine-tune. The one thing it cannot restore is the
+  `%` sign on a rate, because `series` stores the number and not the sign.
 - The **comparison report** (`compare.go`) is deliberately separate from the
   single-model one (`report.go`): different question, different shape. Its
   dropdowns are plain JavaScript on purpose — htmx needs a server a `file://`

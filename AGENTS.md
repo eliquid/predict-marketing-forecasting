@@ -34,7 +34,7 @@ published, through the adapter in `models/`.
 ./install.sh                # one-time setup: Python env, build, model weights (~2.5 GB)
                             # sets up chronos2 and timesfm3; chronos2ft needs YOUR data
 go build -o predictmarketing .
-go test ./...               # ~143 tests, about 30s
+go test ./...               # 165 tests
 go vet ./... && gofmt -l .  # must be silent
 ./predictmarketing forecast testdata/example.csv -model chronos2
 ```
@@ -57,7 +57,7 @@ only against per-IP rate limits (shared connections, CI, repeated installs); it
 does nothing if Hugging Face is blocked outright, which is what the Chronos-2
 mirror in Releases is for.
 
-Commands: `setup`, `models`, `import`, `forecast`, `runs`, `accuracy`.
+Commands: `setup`, `models`, `import`, `report`, `forecast`, `runs`, `accuracy`.
 
 ## 2c. The import workflow
 
@@ -145,6 +145,41 @@ blindness. End labels are pushed apart by `spreadLabels`, because models that
 agree finish at the same height and would otherwise print their names on top of
 each other exactly when the chart is most worth reading.
 
+### Redrawing the reports: `report` (`rerender.go`)
+
+A report is a rendering of numbers the database already holds, so a change to how
+a chart is drawn should not cost a forecast — let alone the retrain, which is
+measured in minutes and would give different numbers to look at. `report` rebuilds
+the pages from the runs already stored.
+
+It is **read-only, deliberately**. No CSV is read, nothing is forecast, nothing is
+trained, and nothing is written to the database. That is the whole point of it
+being a separate command rather than a flag on `import`.
+
+| What it does | Where it lives |
+|---|---|
+| List the datasets that have forecasts, or check the one named | `storedSeries` |
+| Take the newest run of each model, **restricted to the newest `as_of`** | `latestRuns` |
+| Read the stored quantiles back into `[metric][day][quantile]` | `loadForecast` |
+| Rebuild the history and the inactive entities from `series` | `rebuildData` |
+| Write report 1, and report 2 if a fine-tuned run is stored | `writeComparison` |
+
+Only runs sharing the newest `as_of` are drawn. Two runs made from different
+amounts of history are not comparable, and putting them on one set of axes would
+invent a disagreement that is really a difference in what each model was shown.
+A dataset whose only runs are pretrained gets report 1 alone; the second report
+appears when a run declares `trained_through` (§4c).
+
+The file names are `reportPath`'s, the same ones `import` writes, so `report`
+replaces the pages in place rather than leaving a second set beside them.
+
+**One thing is not recoverable: the `%` sign.** `series` stores the number a rate
+was parsed to, not that it was written as a percentage, so `data.Percent` is empty
+on a rebuild and a re-rendered rate prints bare. The number is right; only the
+sign is missing. Re-importing the export restores it. Do not fix this by guessing
+from the column name — the classification rule (§4b) decides what a rate *is*, and
+whether the file wrote a sign is a separate fact that would have to be stored.
+
 `forecast` flags:
 
 | | |
@@ -167,6 +202,15 @@ each other exactly when the chart is most worth reading.
 | `-horizon N` | days ahead, default 7 |
 | `-history N` | days of past data drawn on the charts, default 90 |
 | `-no-finetune` | write report 1 only, skipping the ten-minute retrain |
+| `-db FILE` | database file, default `pm.db` |
+
+`report` flags:
+
+| | |
+|---|---|
+| `-series NAME` | which dataset, default every one that has forecasts |
+| `-history N` | days of past data drawn on the charts, default 0 = all of it |
+| `-data DIR` | folder whose `reports/` to write into, default `data` |
 | `-db FILE` | database file, default `pm.db` |
 
 Longer checks:
@@ -255,10 +299,11 @@ stored forecast, which is what `accuracy` scores against.
 ## 3. Repository map
 
 ```
-main.go          commands: setup, models, import, forecast, runs, accuracy
+main.go          commands: setup, models, import, report, forecast, runs, accuracy
 import.go        the recurring job: data/ -> forecasts -> two reports -> imported/
 compare.go       the multi-model comparison report
 compare_template.go  its page, with the campaign and metric dropdowns
+rerender.go      report: redraws those pages from stored runs, reading only
 ingest.go        CSV -> Data (dates, numeric columns, skipped text columns)
 worker.go        the model protocol + output validation   <- read this first
 db.go            SQLite: raw, series, runs, forecasts

@@ -297,12 +297,43 @@ trained on, because a model should not be judged on days it has already seen.
 If you would rather not wait for the fine-tune, `-no-finetune` writes report 1
 and stops.
 
+### Redrawing a report without forecasting again
+
+Every forecast is kept, so the report is only a drawing of numbers already in
+`pm.db`. If you want the pages rebuilt — after an upgrade that changes how the
+chart looks, or because you deleted one — you do not have to import anything:
+
+```bash
+./predictmarketing report
+```
+
+That reads the database and rewrites the reports in `data/reports/`, under the
+same names, in a moment. **Nothing is forecast, nothing is retrained and nothing
+is written to the database** — which is the point, since retraining the third
+model is the part measured in minutes.
+
+It draws the newest run of each model, and only runs made from the same amount
+of history, so the lines on a chart are always comparing like with like.
+
+```
+-series NAME    which dataset (default: every one that has forecasts)
+-history N      days of past data drawn on the charts (default: all of them)
+-data DIR       folder whose reports/ to write into (default: data)
+-db FILE        database file (default: pm.db)
+```
+
+One difference you may notice: a percentage column loses its `%` sign. The
+database stores what a rate is worth, not that the export wrote it with a sign
+on, so a redrawn page cannot put it back. The numbers are the same ones. Import
+the export again if you want the sign.
+
 ## Commands
 
 | | |
 |---|---|
 | `predictmarketing setup` | download both models' weights and record their checksums |
 | `predictmarketing import` | **the recurring job**: read new CSVs from `data/`, forecast with every model, write both reports |
+| `predictmarketing report` | redraw the reports from forecasts already stored, without forecasting again |
 | `predictmarketing version` | what this build is — include it in bug reports |
 | `predictmarketing models` | show each model and what it can do |
 | `predictmarketing forecast FILE.csv` | forecast a CSV of `date,value` rows |
@@ -704,7 +735,7 @@ stuck rather than busy
 ## Testing
 
 ```bash
-go test ./...                                   # 50 tests
+go test ./...                                   # 165 tests
 go test -race -count=2 ./...                    # state leakage between tests
 go test -run '^$' -fuzz FuzzReadCSV -fuzztime 60s
 ```
