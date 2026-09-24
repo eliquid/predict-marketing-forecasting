@@ -405,10 +405,28 @@ func saveData(db *sql.DB, seriesID string, d *Data) error {
 		return err
 	}
 	defer tx.Rollback()
+
+	// Replace the whole dataset, the way saveRaw replaces its source.
+	//
+	// An upsert only touches the cells the new file covers, so a narrower or
+	// different export left everything it did not mention behind: a campaign
+	// dropped from a later export, days trimmed off the start, or an import for
+	// an entirely different account under the same name. `raw` was then exactly
+	// the newest file while `series` was the union of every import ever done, and
+	// since forecast_accuracy joins to `series` and not to `raw`, those disowned
+	// rows kept being scored as though they were actuals. Measured before this:
+	// seven days scored against numbers present in no raw row.
+	//
+	// Deleting first makes the two tables agree by construction. Nothing
+	// references `series`, so runs and forecasts are untouched -- a forecast made
+	// against data you have since replaced simply stops having an actual to score
+	// against, which is the honest outcome.
+	if _, err := tx.Exec(`DELETE FROM series WHERE series_id=?`, seriesID); err != nil {
+		return fmt.Errorf("clearing previous data for %q: %w", seriesID, err)
+	}
+
 	st, err := tx.Prepare(`INSERT INTO series (series_id, entity, metric, day, value)
-	                       VALUES (?,?,?,?,?)
-	                       ON CONFLICT(series_id, entity, metric, day)
-	                       DO UPDATE SET value=excluded.value`)
+	                       VALUES (?,?,?,?,?)`)
 	if err != nil {
 		return err
 	}

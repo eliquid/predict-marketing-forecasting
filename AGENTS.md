@@ -486,17 +486,18 @@ The account and the campaigns are forecast **independently**, so their totals
 will not match exactly. On the real file they agree to within 1–4%, which is a
 useful sanity check rather than a guarantee.
 
-**The uneven-rows guard counts rows, not campaigns.** It checks that every day
-carries the same *number* of rows, never the same *set* of them, so a day that
-lists one campaign twice and another not at all goes straight through. Measured
-on a two-campaign file where one day carried two `Brand` rows and no `Shopping`
-row: `Brand` absorbed both (1119 against a true 120) and `Shopping` was stored as
-a real 0 for that day. Only the per-campaign split is wrong — and the fabricated
-zero is exactly the step in a series the guard exists to prevent. Nothing is
-printed.
+**Two guards, because counting rows is not enough.** The first checks that every
+day carries the same *number* of rows. The second, `sameCampaignsEveryDay`,
+checks that it carries the same *set* of them, and runs once the group column is
+known. Only the row count existed at first, and a day that listed one campaign
+twice and another not at all passed it: measured on a two-campaign file, `Brand`
+absorbed both rows (1119 against a true 120) and `Shopping` was stored as a real 0
+it never reported — a fabricated step in exactly the series the guard exists to
+protect, with the account total still correct so nothing looked wrong.
 
-If a campaign series shows an unexplained zero day, count that day's distinct
-campaigns in the export before looking for a fault in the model.
+Both now refuse the file and name the day, the campaign and which way it differs.
+A campaign that appears on one day and nowhere else cannot arise on its own: it
+changes the file's distinct count and `findGroupColumn` refuses first.
 
 **A campaign renamed or replaced part-way through the export cannot be imported
 at all.** `findGroupColumn` counts a column's distinct values over the *whole
@@ -756,34 +757,30 @@ that is the actual test in the review checklist.
 | `forecast_accuracy` | **view**, not a table | joins each stored forecast to the actual that arrived later |
 
 `raw` is replaced per source on re-import, so correcting an export does not leave
-stale rows. Everything else is append-only except `series`, which updates in place.
+stale rows. **`series` is replaced the same way**, per `series_id`, so the two
+tables always describe the same file.
 
-**"Updates in place" means the cells the new file covers, and only those.**
-`saveRaw` deletes the whole source before inserting; `saveData` is an upsert with
-no delete. So after a re-import that *narrows* the export — fewer days, fewer
-campaigns, a different number of rows per day — `raw` is exactly the newest file
-and `series` is the union of every import ever done under that name. No CLI path
-removes a row from `series`; `DELETE FROM raw` is the only delete in the program.
+That replacement is deliberate and was not always there. `saveData` used to be an
+upsert with no delete, which only touched the cells the new file covered — so a
+re-import that *narrowed* the export, or an import for an entirely different
+account under the same name, left everything it did not mention behind. `raw` was
+then exactly the newest file while `series` was the union of every import ever
+done, and since `forecast_accuracy` joins forecasts to `series` and never to
+`raw`, those disowned rows kept being scored as though they were actuals.
+Measured before the fix: seven days scored against numbers present in no raw row.
 
-This is not cosmetic. `forecast_accuracy` joins forecasts to `series`, never to
-`raw`, so disowned rows keep being scored as though they were actuals and nothing
-marks them. Measured on a deliberately narrowed re-import: seven days scored
-against actuals present in no raw row. Detect it —
+The consequence to understand: **a re-import discards the previous dataset of the
+same name.** Runs and forecasts survive — nothing references `series` — but a
+forecast made against data you have since replaced simply stops having an actual
+to score against. That is the honest outcome, and it is what makes importing a
+different account under an old name safe. Use a distinct `-series` name if you
+want two accounts side by side.
 
-    SELECT s.series_id, s.entity, COUNT(DISTINCT s.day) AS orphan_days,
-           MIN(s.day), MAX(s.day)
-    FROM series s
+To confirm the two tables agree, which they now do by construction:
+
+    SELECT COUNT(*) FROM series s
     WHERE NOT EXISTS (SELECT 1 FROM raw r
-                      WHERE r.source = s.series_id AND r.day = s.day)
-    GROUP BY 1, 2;
-
-— then delete that series and re-import the corrected CSV under the same name.
-Nothing references `series`, so runs and forecasts survive untouched:
-
-    sqlite3 pm.db "DELETE FROM series WHERE series_id='<name>'"
-
-`reimport_test.go` covers the *same-shape* correction, where the upsert really
-does fix everything. A narrowing one is a different case and is not covered.
+                      WHERE r.source = s.series_id AND r.day = s.day);
 
 **Nothing deduplicates a run.** `input_sha256` is written and never read, so the
 same `forecast` command run twice stores two runs and `accuracy` counts both:
@@ -860,27 +857,26 @@ stamped only when the schema is actually written, which is what keeps opening an
 up-to-date file a pure read. Bump `schemaVersion` and teach `staleTable` (via
 `requiredColumns`) the new columns whenever a table changes shape.
 
-**The same trap applies to `forecast_accuracy` and `forecasts_median`, and there
-the escape hatch does not exist.** `CREATE VIEW IF NOT EXISTS` and
-`CREATE INDEX IF NOT EXISTS` also ignore the new definition on a file that already
-has the object. For a *table* change, bumping `schemaVersion` and teaching
-`staleTable` a new column makes the old file be refused with an explanation. A
-view or an index has no columns for `staleTable` to inspect — it looks only at
-`series`, `forecasts`, `runs` and `raw` — so an old file is adopted silently and
-keeps the old definition. A file already stamped at the current `schemaVersion`
-never has the DDL run over it at all.
+**The view and the indexes are handled separately, because `schemaVersion` cannot
+speak for them.** They used to sit inside `schema` behind `CREATE ... IF NOT
+EXISTS`, which ignores a new definition just as surely — and unlike a table there
+is nothing for `staleTable` to inspect, since a view has no columns of its own to
+miss. A file carrying an old definition was therefore adopted in silence and kept
+it. Reproduced: a deliberately stale `forecast_accuracy` made `accuracy` **exit
+0** printing `no forecast day has an actual yet` on a database holding 105
+scorable rows.
 
-Reproduced: with a deliberately stale view in place, `accuracy` **exited 0**
-printing `no forecast day has an actual yet` and `0 forecast days are still
-waiting` on a database holding 350 scorable rows. That is this schema's one
-documented failure mode, applied to the two objects the paragraph above does not
-cover, and it is worse there because there is nothing to teach `staleTable`.
+They are now `derivedObjects` — the view and both indexes, everything that holds
+no data of its own — compared against the file on **every** open by
+`refreshDerived` and rebuilt when the text differs. SQLite stores each `CREATE`
+verbatim, so the comparison is exact. It is a pure read when nothing has changed,
+which is what keeps opening a current database free of writes and still possible
+on a read-only file, and two processes racing to create the same object is success
+for both.
 
-**If you change the view or the index, drop it explicitly.** Bumping
-`schemaVersion` alone does nothing. Put `DROP VIEW IF EXISTS` / `DROP INDEX IF
-EXISTS` ahead of the `CREATE`, or the change reaches only new databases — which
-is exactly where `sqlite_test.go` looks, so the regression is invisible to the
-suite as well.
+**So changing the view or an index needs no `schemaVersion` bump** — edit the DDL
+in `derivedObjects` and every existing database picks it up on next open. Adding a
+new derived object means adding it to that slice, not to `schema`.
 
 **Forecasts are kept so they can be scored later.** Each run records `as_of` — the
 last day of real data it was based on, which is not always the day it was run.
@@ -1065,6 +1061,14 @@ that just failed; add the flags by hand:
 models/.venv/bin/python models/finetune.py data/imported/FILE.csv \
   --steps 2000 --metrics "Cost,Impressions,Clicks" --group Campaign
 ```
+
+**The trainer refuses what the forecaster refuses.** `num()` in `models/finetune.py`
+mirrors `parseCell`: currency symbols, thousands separators,
+percent signs, spaces and parenthesised negatives all read the same way, and NaN
+and Infinity are rejected rather than accepted. They diverged at first, in both
+directions — `--`, `£10`, `(1,234.00)` and `1 234` killed the trainer with a bare traceback on files the forecaster reads fine, while `NaN` sailed through into the
+training matrix on the one file the forecaster refuses outright. Keep them in
+step: a cell either side rejects is a cell neither should model.
 
 **`--horizon` and `--group` are accepted and recorded nowhere.** The registry keeps
 `steps`, `batch_size`, `context_length`, `learning_rate`, `train_series`,
@@ -1320,6 +1324,11 @@ a hypothetical. The ones worth knowing about, because they are easy to reintrodu
 | Doc and installer tests asserting that generated paths exist | passed in a working copy, failed in the bundle a recipient unpacks: ten failures before anyone could run `./install.sh` |
 | Campaign totals added without a finite check | individually-finite values could sum to +Inf in the account series, which SQLite stores silently and every later total, axis and average inherits |
 | The console summary indexing the account unconditionally | every `-entities` run that excluded the account panicked with "index out of range [0] with length 0"; the report template had been fixed for this, the summary beside it had not |
+
+| Counting rows per day but never the campaigns in them | a day listing one campaign twice and another not at all passed: the duplicate stored as 1119 against a true 120, the absent one as a fabricated 0, account total still correct |
+| `CREATE VIEW / INDEX IF NOT EXISTS` treated as a migration | a stale `forecast_accuracy` made `accuracy` exit 0 reporting "no forecast day has an actual yet" on a database holding 105 scorable rows |
+| `saveData` upserting where `saveRaw` replaces | a narrowing re-import left `series` holding rows the current export disowned, and `forecast_accuracy` scored against them |
+| The trainer parsing cells its own way | `NaN` reached the training matrix on the one file the forecaster refuses, while `--`, `£10` and `(1,234.00)` killed the trainer on files it accepts |
 
 None of these were in the models. All were in the surrounding code.
 

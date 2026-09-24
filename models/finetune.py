@@ -73,6 +73,38 @@ def running_groups(hdr, data, group_col):
             if r[0] == last and CAMPAIGN_STATES.get(r[col].strip().lower(), False)}
 
 
+def num(s, where=""):
+    """Parse one cell the way ingest.go's parseCell does, and refuse what it
+    refuses.
+
+    The two have to agree. Go strips currency symbols, thousands separators,
+    percent signs and spaces, and reads a parenthesised value as negative; this
+    handled only three of those, so `--`, `£10`, `(1,234.00)` and `1 234` — all
+    of which the forecaster reads without complaint — killed the trainer with a
+    bare ValueError traceback partway through a file.
+
+    The non-finite check matters more. Python's float() accepts "NaN" and
+    "Infinity", and Go explicitly refuses both, so the one file the forecaster
+    will not touch was the one the trainer would happily fit an adapter to, with
+    NaN propagating through every step. Refuse it here too, and say where.
+    """
+    raw = s.strip()
+    neg = raw.startswith("(") and raw.endswith(")")
+    t = raw.strip("()")
+    for ch in ("$", "\u00a3", "\u20ac", ",", "%", " "):
+        t = t.replace(ch, "")
+    if t == "":
+        sys.exit(f"empty value{where}. Every cell a metric column holds has to be "
+                 f"a number; the forecaster refuses this file too.")
+    try:
+        v = float(t)
+    except ValueError:
+        sys.exit(f"not a number: {raw!r}{where}")
+    if v != v or v in (float("inf"), float("-inf")):
+        sys.exit(f"not a finite number: {raw!r}{where}")
+    return -v if neg else v
+
+
 def load_series(csv_path, metrics, group_col):
     """One (metrics, days) matrix per group, plus the total across all of them.
 
@@ -96,14 +128,13 @@ def load_series(csv_path, metrics, group_col):
 
     days = sorted({r[0] for r in data})
     di = {d: i for i, d in enumerate(days)}
-    num = lambda s: float(s.strip().replace(",", "").replace("$", "").replace("%", ""))
 
     per, total = {}, np.zeros((len(metrics), len(days)))
     for r in data:
         key = r[ix[group_col]] if group_col and group_col in ix else "(account)"
         m = per.setdefault(key, np.zeros((len(metrics), len(days))))
         for k, name in enumerate(metrics):
-            v = num(r[ix[name]])
+            v = num(r[ix[name]], f" in column {name!r} on {r[0]}")
             m[k][di[r[0]]] += v
             total[k][di[r[0]]] += v
 

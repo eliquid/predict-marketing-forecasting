@@ -168,3 +168,90 @@ func TestSeriesAreIsolated(t *testing.T) {
 		t.Errorf("both series report %v; one overwrote the other", pa[0].Value)
 	}
 }
+
+// Re-importing replaces the dataset rather than merging into it.
+//
+// saveData used to be an upsert with no delete, so it only touched the cells the
+// new file covered. A narrower export -- fewer days, fewer campaigns, or an
+// import for an entirely different account under the same name -- left
+// everything it did not mention behind. `raw` was then exactly the newest file
+// while `series` was the union of every import ever done, and since
+// forecast_accuracy joins to `series`, those disowned rows kept being scored as
+// though they were actuals.
+func TestReimportReplacesTheDatasetRatherThanMerging(t *testing.T) {
+	db, err := openDB(filepath.Join(t.TempDir(), "r.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	first := &Data{
+		Days:     []string{"2026-01-01", "2026-01-02", "2026-01-03"},
+		Names:    []string{"Cost"},
+		Entities: []string{AccountEntity, "Alpha", "Ghost"},
+		Values: map[string]map[string][]float64{
+			AccountEntity: {"Cost": {600, 600, 600}},
+			"Alpha":       {"Cost": {100, 100, 100}},
+			"Ghost":       {"Cost": {500, 500, 500}},
+		},
+	}
+	if err := saveData(db, "acct", first); err != nil {
+		t.Fatal(err)
+	}
+
+	// A different account entirely: shorter, one campaign, different numbers.
+	second := &Data{
+		Days:     []string{"2026-01-01", "2026-01-02"},
+		Names:    []string{"Cost"},
+		Entities: []string{AccountEntity, "Beta"},
+		Values: map[string]map[string][]float64{
+			AccountEntity: {"Cost": {7, 8}},
+			"Beta":        {"Cost": {7, 8}},
+		},
+	}
+	if err := saveData(db, "acct", second); err != nil {
+		t.Fatal(err)
+	}
+
+	var entities, days int
+	if err := db.QueryRow(`SELECT COUNT(DISTINCT entity), COUNT(DISTINCT day)
+	                       FROM series WHERE series_id='acct'`).Scan(&entities, &days); err != nil {
+		t.Fatal(err)
+	}
+	if entities != 2 || days != 2 {
+		t.Errorf("after re-import: %d entities over %d days, want 2 and 2 — the "+
+			"previous account's rows are still there", entities, days)
+	}
+	for _, gone := range []string{"Alpha", "Ghost"} {
+		var n int
+		if err := db.QueryRow(`SELECT COUNT(*) FROM series WHERE series_id='acct' AND entity=?`,
+			gone).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		if n != 0 {
+			t.Errorf("%q survived the re-import with %d rows", gone, n)
+		}
+	}
+	pts, err := loadSeries(db, "acct", AccountEntity, "Cost")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pts) != 2 || pts[0].Value != 7 {
+		t.Errorf("account series = %v, want the second import's numbers", pts)
+	}
+
+	// A different dataset in the same database must be untouched by any of this.
+	if err := saveData(db, "other", first); err != nil {
+		t.Fatal(err)
+	}
+	if err := saveData(db, "acct", second); err != nil {
+		t.Fatal(err)
+	}
+	var n int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM series WHERE series_id='other'`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 9 {
+		t.Errorf("re-importing 'acct' changed 'other': %d rows, want 9", n)
+	}
+}

@@ -85,22 +85,27 @@ sqlite3 /tmp/repair.db "SELECT sql FROM sqlite_master WHERE name='forecast_accur
 sqlite3 /tmp/repair.db "SELECT sql FROM sqlite_master WHERE name='forecasts_median';"
 ```
 
-Compare them against `schema` in `db.go`. `CREATE VIEW IF NOT EXISTS` and
-`CREATE INDEX IF NOT EXISTS` do nothing on a file that already has the object, so
-a database created by an earlier build keeps that build's view forever — and
-`staleTable` cannot notice, because it only inspects table columns. A file
-already stamped at the current `schemaVersion` never has the DDL run over it at
-all.
+**Fixed in the code, so on a current binary this repairs itself.** `openDB` calls
+`refreshDerived`, which compares the view and both indexes against
+`derivedObjects` in `db.go` on every open and rebuilds any that differ. Simply
+running any command against the file is the repair.
 
-Repair:
+It is worth knowing what it looked like, because a database that has not been
+opened by a current binary still has it. The view and indexes used to sit inside
+`schema` behind `CREATE ... IF NOT EXISTS`, which does nothing on a file that
+already has the object — so a database created by an earlier build kept that
+build's view forever, and `staleTable` could not notice, because it only inspects
+table columns. A file already stamped at the current `schemaVersion` never had the
+DDL run over it at all.
+
+Repair, if you are on an older binary:
 
 ```bash
 sqlite3 /tmp/repair.db "DROP VIEW IF EXISTS forecast_accuracy;
                         DROP INDEX IF EXISTS forecasts_median;"
 ```
 
-then open the file with the tool once — `openDB` will recreate both from the
-current `schema`. Check the plan afterwards, because an index that is present but
+then open the file with the tool once. Check the plan afterwards, because an index that is present but
 not used looks identical from the outside:
 
 ```bash
@@ -122,12 +127,18 @@ the tests look, so nothing will fail.
 
 ## 3. `accuracy` is scoring days the current export does not contain
 
-`saveRaw` deletes the whole source and reinserts. `saveData` is an upsert with no
-delete. So a re-import that *narrows* an export — fewer days, fewer campaigns, or
-a different number of rows per day — leaves `raw` equal to the newest file and
-`series` equal to the union of every import ever done under that name.
-`forecast_accuracy` joins to `series`, never to `raw`, so those disowned rows go
-on being scored as actuals with nothing in the output to mark them.
+**Fixed in the code, so this is for databases written before that.** `saveData`
+now deletes the whole `series_id` before inserting, the way `saveRaw` always did,
+so the two tables agree by construction and a re-import — including one for an
+entirely different account under the same name — replaces rather than merges.
+
+Older files can still hold the damage. Until that change `saveData` was an upsert
+with no delete, so a re-import that *narrowed* an export left `raw` equal to the
+newest file and `series` equal to the union of every import ever done under that
+name. `forecast_accuracy` joins to `series`, never to `raw`, so those disowned
+rows went on being scored as actuals with nothing in the output to mark them.
+Re-importing once with a current binary clears it; the query below tells you
+whether you need to.
 
 Detect. `raw.source` and `series.series_id` are both the `-series` name (the file
 basename when nobody said), and nothing enforces that they agree:
@@ -150,11 +161,14 @@ export has one campaign per day and so produces no campaign split at all, leavin
 the per-campaign entities frozen at the older import's values. If the shape of the
 export changed, assume the whole series is suspect rather than trusting the query.
 
-Repair — delete the series and re-import the corrected CSV under the same name:
+Repair — re-import the corrected CSV under the same name. A current binary
+replaces the dataset on its own, so the manual delete is only needed if you are
+stuck on an older one:
 
 ```bash
-sqlite3 /tmp/repair.db "DELETE FROM series WHERE series_id='NAME'"
 ./predictmarketing forecast CORRECTED.csv -series NAME -db /tmp/repair.db
+# older binaries only:
+# sqlite3 /tmp/repair.db "DELETE FROM series WHERE series_id='NAME'"
 ```
 
 Nothing references `series`, so `runs` and `forecasts` survive untouched — which

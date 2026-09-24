@@ -499,11 +499,31 @@ func TestTrainingIsNeverGatedOnTheData(t *testing.T) {
 				"steps it was given and says what it did.", gone)
 		}
 	}
-	// The only ways out are a column that is not there (before any training) and
-	// an adapter that was not written (after all of it). Neither looks at size.
-	if n := strings.Count(src, "sys.exit"); n != 2 {
-		t.Errorf("finetune.py has %d exits, want the 2 documented ones; a new one "+
-			"must not be able to stop training part-way", n)
+	// What matters is not how many ways out there are -- refusing unreadable
+	// input before training starts is the project's first hard rule -- but that
+	// none of them can fire once training is under way. Everything before
+	// `pipe.fit` is validation; after it, the only exit is the adapter check.
+	fit := strings.Index(src, "pipe.fit(")
+	if fit < 0 {
+		t.Fatal("finetune.py no longer calls pipe.fit; this test is checking nothing")
+	}
+	if n := strings.Count(src[fit:], "sys.exit"); n != 1 {
+		t.Errorf("finetune.py has %d exits after training begins, want only the "+
+			"adapter check; training must never be stopped part-way", n)
+	}
+	// And nothing may end it from inside a callback, which is how the wall clock
+	// did it.
+	if i := strings.Index(src, "class StepCount"); i >= 0 {
+		body := src[i:]
+		if end := strings.Index(body, "\n    from "); end > 0 {
+			body = body[:end]
+		}
+		for _, banned := range []string{"sys.exit", "should_training_stop", "raise"} {
+			if strings.Contains(body, banned) {
+				t.Errorf("the StepCount callback contains %q; it counts steps and "+
+					"nothing else", banned)
+			}
+		}
 	}
 }
 

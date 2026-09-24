@@ -98,6 +98,16 @@ Several things moved, so older notes may mislead:
   act on such a judgement and neither can the reader, and mid-run it reads as a
   failure. Measured facts about how well the adapter does go in `AGENTS.md` §4c;
   they do not go in the program's output.
+- **Storage replaces, it does not merge.** `saveData` and `saveRaw` both delete
+  the whole `series_id`/source before inserting, so `series` and `raw` always
+  describe the same file and a re-import — including one for a different account
+  under the same name — discards the previous dataset. Runs and forecasts survive.
+- **The view and the indexes live in `derivedObjects`, not `schema`.** They are
+  compared and rebuilt on every open, so changing one needs no `schemaVersion`
+  bump — and putting a new one back in `schema` behind `IF NOT EXISTS` reinstates
+  a bug where a stale view answered queries wrongly instead of failing.
+- **`num()` in `models/finetune.py` must stay in step with `parseCell`.** They
+  diverged in both directions once: NaN trained on, ordinary cells crashing.
 - **Never put a time limit on training.** A `--budget` wall clock silently cut a
   real run to 1,210 of 2,000 steps and the resulting adapter looked finished in
   every report. Removed everywhere; lower `--steps` instead (`AGENTS.md` §2c).
