@@ -122,6 +122,21 @@ Several things moved, so older notes may mislead:
 - **`import` is the recurring job now** (`AGENTS.md` §2c): `data/` in,
   two comparison reports out, CSV filed into `data/imported/`. It refuses under
   90 days. `forecast` is still the single-model command underneath it.
+- **Every import forecasts three windows** — whole file, last 270 days, last 90 —
+  with both pretrained models, plus `average@models`, the mean of them
+  (`AGENTS.md` §2c). A window longer than the file, or exactly as long as it, is
+  **skipped and announced**, never an error; below 90 days nothing runs and the
+  message names the 90-day gate, not the 32-day model floor.
+- **The window is in the stored model name** (`chronos2@90d`), because `accuracy`
+  groups by that column and the point is to learn which history length forecasts
+  best. `runLabel` builds it; the worker is started by the bare name.
+- **`lastDays` trims numbers only.** Names, entities, group column and exclusion
+  lists stay as the whole file decided them, or a short window could classify a
+  campaign differently and `writeComparison`'s intersection would silently drop
+  it from every chart.
+- **`average@models` excludes `chronos2ft`** and any run with a different
+  quantile grid. Trained on the data it would be averaged into, and it has not
+  beaten stock (`AGENTS.md` §4c).
 - **`report` redraws the pages from stored runs** (`rerender.go`, `AGENTS.md`
   §2c). It reads only: no CSV, no forecast, no retrain, no write to the
   database. Use it when you have changed how a chart is drawn — re-importing to

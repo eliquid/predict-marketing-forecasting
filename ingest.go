@@ -654,8 +654,7 @@ func readCSV(path string, want []string, groupBy string) (*Data, error) {
 		return nil, err
 	}
 	if len(d.Days) < smallestUsefulSeries {
-		return nil, fmt.Errorf("%s: %d days is too few to forecast from; need at least %d",
-			path, len(d.Days), smallestUsefulSeries)
+		return nil, tooShort{Path: path, Days: len(d.Days)}
 	}
 
 	// Restrict to the columns asked for, keeping the order they were asked in.
@@ -699,6 +698,22 @@ func readCSV(path string, want []string, groupBy string) (*Data, error) {
 		d.Names = chosen
 	}
 	return d, nil
+}
+
+// tooShort is returned when a file has fewer days than any model can use.
+//
+// It carries the count because the floor a reader should be told about is not
+// always this one: `forecast` refuses below smallestUsefulSeries, but `import`
+// refuses below importMinDays, and quoting 32 at someone whose real problem is
+// that they need 90 sends them back with a file that will be refused again.
+type tooShort struct {
+	Path string
+	Days int
+}
+
+func (e tooShort) Error() string {
+	return fmt.Sprintf("%s: %d days is too few to forecast from; need at least %d",
+		e.Path, e.Days, smallestUsefulSeries)
 }
 
 // checkConsecutive refuses a series with missing days.

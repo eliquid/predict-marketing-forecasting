@@ -25,10 +25,24 @@ where you stand. The `data/` the CSV goes into is the **installation's** one for
 the same reason — copy it somewhere else and `import` will say, with the full
 path, that it found no files.
 
-That is the whole job: it forecasts with every model, writes report 1
-(`chronos2` + `timesfm3`) immediately, puts the reports in `data/reports/`, files the CSV into `data/imported/`, then
-trains `chronos2ft` and writes report 2 with all three. At least 90 days of
-history is required; 365 is better, 730 best. See `AGENTS.md` §2c.
+That is the whole job. It forecasts the file **three times** — whole file, last
+270 days, last 90 days — with both pretrained models, stores `average@models` as
+the mean of those runs, and writes report 1 with all of them on one chart. Then
+it files the CSV into `data/imported/`, trains `chronos2ft` on the full history
+and writes report 2 with that added. Reports go to `data/reports/`.
+
+A window longer than the file is **skipped and announced**, not an error, so a
+short export still produces everything it can:
+
+```
+  full window (100 days)
+  skipping the 270d window: the file has 100 days
+  90d window (90 days)
+  average@models: the mean of the 4 runs above
+```
+
+At least 90 days is required; 365 is better, 730 best. All three windows need
+**271** days. See `AGENTS.md` §2c.
 
 The steps below are the manual equivalent, for when you want one model, one
 metric, or a horizon the import does not use.

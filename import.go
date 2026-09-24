@@ -19,6 +19,8 @@ import (
 	"crypto/rand"
 	"database/sql"
 	"encoding/hex"
+	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -43,6 +45,38 @@ const (
 	importedName = "imported"
 	reportsName  = "reports"
 )
+
+// The windows every import forecasts, longest first.
+//
+// One model on one history is a single opinion. The same model on three
+// histories shows whether that opinion depends on how far back you look --
+// which, measured on a real export, it mostly does not once the newest day is
+// complete, and dramatically does when it is not. Drawing them together is the
+// point: where the lines agree you can believe them, and where they separate
+// the spread is the honest measure of confidence.
+//
+// days = 0 means the whole file. A window longer than the file is skipped
+// rather than refused, so a short export still produces everything it can.
+var importWindows = []struct {
+	label string
+	days  int
+}{
+	{"full", 0},
+	{"270d", 270},
+	{"90d", 90},
+}
+
+// averageLabel is the ensemble line: the mean of the pretrained window runs,
+// stored as a run of its own so `accuracy` can score it against them.
+//
+// It deliberately excludes chronos2ft. The fine-tune is fitted to the same data
+// it would be averaged into, and it has not beaten the stock models (AGENTS.md
+// 4c), so including it would let a weaker, leakier opinion pull the ensemble.
+const averageLabel = "average@models"
+
+// runLabel is what goes in runs.model: the model and the window it saw. The
+// worker is still started by the bare model name.
+func runLabel(model, window string) string { return model + "@" + window }
 
 func cmdImport(args []string) error {
 	fs := flag.NewFlagSet("import", flag.ExitOnError)
@@ -127,6 +161,13 @@ At least 90 days of history is required. A year is better, two years is best.
 func importOne(path, dir, dbPath string, horizon, history int, skipFinetune bool) error {
 	data, err := readCSV(path, nil, "")
 	if err != nil {
+		// A file below the model floor is also below the import's own, higher
+		// gate. Report the gate the reader has to clear, not the one they hit
+		// first, or they re-export to 32 days and are refused again.
+		var short tooShort
+		if errors.As(err, &short) {
+			return enoughHistory(short.Days)
+		}
 		return err
 	}
 	if err := enoughHistory(len(data.Days)); err != nil {
@@ -161,16 +202,39 @@ func importOne(path, dir, dbPath string, horizon, history int, skipFinetune bool
 		return err
 	}
 
-	// Report 1: the two pretrained models, which need no training and are ready
-	// in seconds.
+	// Report 1: the two pretrained models, over each window that the file is long
+	// enough to fill. They need no training and are ready in seconds.
 	var runs []forecastRun
-	for _, model := range []string{"chronos2", "timesfm3"} {
-		fmt.Printf("\n  running %s\n", model)
-		r, err := runModel(db, model, name, data, days, horizon)
-		if err != nil {
-			return err
+	for _, w := range importWindows {
+		if w.days > len(data.Days) {
+			fmt.Printf("\n  skipping the %s window: the file has %d days\n", w.label, len(data.Days))
+			continue
 		}
-		runs = append(runs, r)
+		// A window the same length as the file is the file. Running it again
+		// would store a second identical run and draw a second identical line.
+		if w.days > 0 && w.days == len(data.Days) {
+			fmt.Printf("\n  skipping the %s window: it is the whole file\n", w.label)
+			continue
+		}
+		slice := lastDays(data, w.days)
+		fmt.Printf("\n  %s window (%d days)\n", w.label, len(slice.Days))
+		for _, model := range []string{"chronos2", "timesfm3"} {
+			fmt.Printf("    running %s\n", model)
+			r, err := runModel(db, model, runLabel(model, w.label), name, slice, days, horizon)
+			if err != nil {
+				return err
+			}
+			runs = append(runs, r)
+		}
+	}
+
+	avg, ok, err := averageRun(db, name, runs, days, horizon)
+	if err != nil {
+		return err
+	}
+	if ok {
+		fmt.Printf("\n  %s: the mean of the %d runs above\n", averageLabel, len(runs))
+		runs = append(runs, avg)
 	}
 
 	first := reportPath(dir, path, "models")
@@ -204,7 +268,7 @@ func importOne(path, dir, dbPath string, horizon, history int, skipFinetune bool
 		return nil
 	}
 
-	ft, err := runModel(db, "chronos2ft", name, data, days, horizon)
+	ft, err := runModel(db, "chronos2ft", runLabel("chronos2ft", "full"), name, data, days, horizon)
 	if err != nil {
 		fmt.Printf("\n  the fine-tuned model would not run: %v\n", err)
 		return nil
@@ -247,7 +311,7 @@ func historyVerdict(n int) string {
 }
 
 // runModel forecasts every entity with one model and stores the run.
-func runModel(db *sql.DB, model, series string, data *Data, days []string,
+func runModel(db *sql.DB, model, label, series string, data *Data, days []string,
 	horizon int) (forecastRun, error) {
 
 	w, err := startWorker(model)
@@ -271,7 +335,7 @@ func runModel(db *sql.DB, model, series string, data *Data, days []string,
 	}
 
 	run := Run{
-		ID: newRunID(), SeriesID: series, Model: model, Horizon: horizon,
+		ID: newRunID(), SeriesID: series, Model: label, Horizon: horizon,
 		Metrics: data.Names, Entities: data.Entities, GroupBy: data.GroupBy,
 		AsOf: data.Days[len(data.Days)-1], CreatedAt: time.Now(),
 		InputHash: hashInput(data.Days, data.Entities, data.Names, data.Values),
@@ -281,6 +345,120 @@ func runModel(db *sql.DB, model, series string, data *Data, days []string,
 		return forecastRun{}, err
 	}
 	return forecastRun{Run: run, Shake: w.Shake, Values: forecasts}, nil
+}
+
+// lastDays returns the same dataset trimmed to its final n days.
+//
+// Only the numbers are trimmed. Names, Entities, GroupBy and the exclusion lists
+// stay as the whole file decided them, so every window forecasts exactly the same
+// campaigns and metrics -- which is what lets one chart carry all of them, since
+// the report intersects entities across runs and would otherwise quietly drop any
+// campaign a shorter window happened to classify differently.
+//
+// n <= 0, or n at or beyond the length of the file, returns the data unchanged.
+func lastDays(d *Data, n int) *Data {
+	if n <= 0 || n >= len(d.Days) {
+		return d
+	}
+	cut := len(d.Days) - n
+	out := *d
+	out.Days = d.Days[cut:]
+	out.Values = make(map[string]map[string][]float64, len(d.Values))
+	for entity, metrics := range d.Values {
+		m := make(map[string][]float64, len(metrics))
+		for name, col := range metrics {
+			m[name] = col[cut:]
+		}
+		out.Values[entity] = m
+	}
+	return &out
+}
+
+// averageRun stores the mean of several runs as a run in its own right.
+//
+// Averaged per entity, metric, day and quantile, so the interval is averaged as
+// well as the median. Averaging monotonic quantiles keeps them monotonic, so the
+// result needs no repair.
+//
+// Runs that declared a different quantile grid are left out rather than lined up
+// by position: averaging a q0.1 with a q0.05 would produce a number that belongs
+// to neither. If fewer than two runs remain there is nothing to average and the
+// caller gets no run back.
+func averageRun(db *sql.DB, series string, runs []forecastRun, days []string,
+	horizon int) (forecastRun, bool, error) {
+
+	if len(runs) < 2 {
+		return forecastRun{}, false, nil
+	}
+	grid := runs[0].Shake.Quantiles
+	same := func(q []float64) bool {
+		if len(q) != len(grid) {
+			return false
+		}
+		for i := range q {
+			if q[i] != grid[i] {
+				return false
+			}
+		}
+		return true
+	}
+	var use []forecastRun
+	for _, r := range runs {
+		if same(r.Shake.Quantiles) {
+			use = append(use, r)
+		}
+	}
+	if len(use) < 2 {
+		return forecastRun{}, false, nil
+	}
+
+	first := use[0]
+	mean := map[string][][][]float64{}
+	for _, entity := range first.Run.Entities {
+		per := make([][][]float64, len(first.Run.Metrics))
+		for mi := range first.Run.Metrics {
+			per[mi] = make([][]float64, len(days))
+			for di := range days {
+				row := make([]float64, len(grid))
+				for qi := range grid {
+					sum := 0.0
+					for _, r := range use {
+						sum += r.Values[entity][mi][di][qi]
+					}
+					row[qi] = sum / float64(len(use))
+				}
+				per[mi][di] = row
+			}
+		}
+		mean[entity] = per
+	}
+
+	info, err := json.Marshal(map[string]any{
+		"model":     averageLabel,
+		"averaged":  labelsOf(use),
+		"quantiles": grid,
+	})
+	if err != nil {
+		return forecastRun{}, false, err
+	}
+	run := Run{
+		ID: newRunID(), SeriesID: series, Model: averageLabel, Horizon: horizon,
+		Metrics: first.Run.Metrics, Entities: first.Run.Entities,
+		GroupBy: first.Run.GroupBy, AsOf: first.Run.AsOf, CreatedAt: time.Now(),
+		InputHash: first.Run.InputHash, ModelInfo: info,
+	}
+	if err := saveRun(db, run, days, grid, mean); err != nil {
+		return forecastRun{}, false, err
+	}
+	return forecastRun{Run: run, Shake: Handshake{Quantiles: grid}, Values: mean}, true, nil
+}
+
+func labelsOf(runs []forecastRun) []string {
+	out := make([]string, len(runs))
+	for i, r := range runs {
+		out[i] = r.Run.Model
+	}
+	return out
 }
 
 // trainFinetune runs the trainer the same way the documentation tells you to.

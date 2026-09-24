@@ -532,7 +532,7 @@ func cmdRuns(args []string) error {
 	}
 	defer rows.Close()
 
-	fmt.Printf("%-14s %-20s %-10s %-8s %-22s %s\n", "RUN", "SERIES", "MODEL", "HORIZON", "WHEN", "WEIGHTS")
+	fmt.Printf("%-14s %-20s %-16s %-8s %-22s %s\n", "RUN", "SERIES", "MODEL", "HORIZON", "WHEN", "WEIGHTS")
 	for rows.Next() {
 		var id, sid, model, when, info string
 		var h int
@@ -541,7 +541,7 @@ func cmdRuns(args []string) error {
 		}
 		var hs Handshake
 		json.Unmarshal([]byte(info), &hs)
-		fmt.Printf("%-14s %-20s %-10s %-8d %-22s %s\n",
+		fmt.Printf("%-14s %-20s %-16s %-8d %-22s %s\n",
 			short(id), sid, model, h, when, short(hs.WeightsSHA256))
 	}
 	return rows.Err()
@@ -633,9 +633,9 @@ func cmdAccuracy(args []string) error {
 		return err
 	}
 
-	group, head := "model, metric", "%-10s %-14s"
+	group, head := "model, metric", "%-16s %-14s"
 	if *byDay {
-		group, head = "model, metric, days_ahead", "%-10s %-14s"
+		group, head = "model, metric, days_ahead", "%-16s %-14s"
 	}
 	q := `SELECT model, metric, ` +
 		map[bool]string{true: "days_ahead", false: "0"}[*byDay] + `,
@@ -667,10 +667,10 @@ func cmdAccuracy(args []string) error {
 		}
 		any = true
 		if *byDay {
-			fmt.Printf("  %-10s %-14s %5d %8d %9.1f%% %+8.1f%% %8.0f%%\n",
+			fmt.Printf("  %-16s %-14s %5d %8d %9.1f%% %+8.1f%% %8.0f%%\n",
 				model, met, ahead, n, mape.Float64, bias.Float64, inside.Float64)
 		} else {
-			fmt.Printf("  %-10s %-14s %8d %9.1f%% %+8.1f%% %8.0f%%\n",
+			fmt.Printf("  %-16s %-14s %8d %9.1f%% %+8.1f%% %8.0f%%\n",
 				model, met, n, mape.Float64, bias.Float64, inside.Float64)
 		}
 	}

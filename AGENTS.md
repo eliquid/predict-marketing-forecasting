@@ -78,11 +78,12 @@ when given.
 |---|---|
 | Read every new CSV in `data/` | `pendingFiles`, creates the folder and a note if absent |
 | Refuse under **90 days**; 365 better, 730 best | `enoughHistory` / `historyVerdict` |
-| Forecast each model over every entity | `runModel` |
-| Report 1 into `data/reports/`: `chronos2` + `timesfm3` | `reportPath`, then `writeComparison` |
+| Forecast each model over every entity, **once per window** | `importWindows`, `lastDays`, `runModel` |
+| Store the mean of those runs as a run of its own | `averageRun` |
+| Report 1 into `data/reports/`: 6 window lines + the average | `reportPath`, then `writeComparison` |
 | Move the CSV to `data/imported/` | `fileAway`, never overwrites |
 | Reports go to `data/reports/`, never beside the export | `reportPath` — `data/` is meant to show at a glance what is still unread |
-| Train `chronos2ft`, then report 2 with all three | `trainFinetune`, then `writeComparison` again |
+| Train `chronos2ft` on the **full** history, then report 2 with everything | `trainFinetune`, then `writeComparison` again |
 
 **The table is one file's job, and `cmdImport` stops at the first file that
 fails.** `pendingFiles` sorts the folder's CSVs by name and calls `importOne` in
@@ -120,6 +121,60 @@ undertrained while appearing in every report as a peer of the pretrained models.
 Nothing in the reports said so. The flag, the callback and the registry field are
 gone. Do not reintroduce a time limit in any form: if training is too slow, lower
 `--steps`, which is honest about what was asked for.
+
+### Three windows, one chart
+
+Every import forecasts the same file three times — the **whole file**, its **last
+270 days** and its **last 90 days** — with both pretrained models, and draws all
+of them on one set of axes.
+
+| Window | Runs when | Stored as |
+|---|---|---|
+| `full` | always | `chronos2@full`, `timesfm3@full` |
+| `270d` | the file has **more than** 270 days | `chronos2@270d`, `timesfm3@270d` |
+| `90d` | the file has **more than** 90 days | `chronos2@90d`, `timesfm3@90d` |
+
+Plus `average@models`, the arithmetic mean of whichever of those ran, and on
+report 2 `chronos2ft@full` — the fine-tune is trained on the whole file only,
+because training it once already costs the longest part of an import.
+
+**Why.** One model on one history is a single opinion. The same model on three
+histories shows whether that opinion depends on how far back you look. Measured
+on a real 1,099-day export, the six lines landed within 2.6% of each other — but
+on the same export with a **partial final day**, they sat 28% lower. Where the
+lines agree you can believe them; where they separate, the spread is the honest
+measure of confidence, and a lone line hides both.
+
+**A window longer than the file is skipped, never refused.** A 100-day export
+produces `full` and `90d` and says so. A window exactly as long as the file *is*
+the file, so it is skipped too — running it again would store a duplicate run and
+draw a second identical line. That means 90 days produces only `full`, and the
+first length giving all three is **271 days**.
+
+**Below 90 days nothing runs at all.** The import gate (`enoughHistory`) is the
+one the reader is told about, even when the lower model floor
+(`smallestUsefulSeries`, 32) fired first: `readCSV` returns a `tooShort` carrying
+the day count, and `importOne` converts it. Quoting 32 at someone who needs 90
+sends them back with a file that will be refused again.
+
+**The window is part of the stored model name** — `chronos2@90d`, not `chronos2`
+— because `accuracy` groups by that column, and the entire point is to find out
+which history length forecasts best. `runLabel` builds it; the worker is still
+started by the bare model name. Nothing validates `runs.model` against the worker
+registry after a run, which is what makes this possible.
+
+**Every window forecasts the same campaigns and metrics.** `lastDays` trims the
+numbers and nothing else — `Names`, `Entities`, `GroupBy` and the exclusion lists
+stay as the whole file decided them. Otherwise a shorter window could classify a
+campaign differently, and `writeComparison` intersects entities across runs, so
+that campaign would vanish from the chart without a word.
+
+**`average@models` excludes `chronos2ft`.** The fine-tune is fitted to the same
+data it would be averaged into and has not beaten the stock models (§4c), so
+including it would let a weaker, leakier opinion pull the ensemble. It also
+excludes any run declaring a different quantile grid: averaging a q0.1 with a
+q0.05 produces a number belonging to neither. Below two usable runs there is no
+average at all.
 
 **Why two reports.** The third model has to be trained on the user's own data
 first, which takes as long as it takes. Report 1 is written and the CSV filed away

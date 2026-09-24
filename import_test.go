@@ -5,9 +5,12 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -577,5 +580,257 @@ func TestChartIsInteractive(t *testing.T) {
 	// A fixed pixel width is what makes pointer position a chart coordinate.
 	if !strings.Contains(page, `<svg width="`) {
 		t.Error("the chart is no longer emitted at a fixed width; the crosshair maths will not hold")
+	}
+}
+
+// Every import forecasts three windows, and a window longer than the file is
+// skipped rather than refused -- a short export still produces everything it can.
+func TestWindowSelection(t *testing.T) {
+	// Which windows a file of n days should actually produce a run for.
+	for _, c := range []struct {
+		days int
+		want []string
+	}{
+		{90, []string{"full"}},                 // the 90d window IS the file
+		{91, []string{"full", "90d"}},          // one day longer, so both differ
+		{100, []string{"full", "90d"}},         // 270 out of reach
+		{269, []string{"full", "90d"}},         // still out of reach
+		{270, []string{"full", "90d"}},         // the 270d window IS the file
+		{271, []string{"full", "270d", "90d"}}, // the first length that gives all three
+		{1099, []string{"full", "270d", "90d"}},
+	} {
+		var got []string
+		for _, w := range importWindows {
+			if w.days > c.days || (w.days > 0 && w.days == c.days) {
+				continue
+			}
+			got = append(got, w.label)
+		}
+		if strings.Join(got, ",") != strings.Join(c.want, ",") {
+			t.Errorf("%d days: windows %v, want %v", c.days, got, c.want)
+		}
+	}
+}
+
+// lastDays trims the numbers and nothing else. Every window has to forecast the
+// same campaigns and metrics, or writeComparison intersects them across runs and
+// quietly drops any campaign a shorter window classified differently.
+func TestLastDaysTrimsOnlyTheNumbers(t *testing.T) {
+	full := &Data{
+		Days:     []string{"2026-01-01", "2026-01-02", "2026-01-03", "2026-01-04"},
+		Names:    []string{"Cost", "Clicks"},
+		Entities: []string{AccountEntity, "Brand"},
+		GroupBy:  "Campaign",
+		Inactive: []string{"Dead"},
+		Paused:   []string{"Dead"},
+		Values: map[string]map[string][]float64{
+			AccountEntity: {"Cost": {1, 2, 3, 4}, "Clicks": {10, 20, 30, 40}},
+			"Brand":       {"Cost": {5, 6, 7, 8}, "Clicks": {50, 60, 70, 80}},
+		},
+	}
+
+	cut := lastDays(full, 2)
+	if len(cut.Days) != 2 || cut.Days[0] != "2026-01-03" {
+		t.Fatalf("days = %v, want the last two", cut.Days)
+	}
+	if got := cut.Values[AccountEntity]["Cost"]; len(got) != 2 || got[0] != 3 {
+		t.Errorf("account Cost = %v, want [3 4]", got)
+	}
+	if got := cut.Values["Brand"]["Clicks"]; len(got) != 2 || got[0] != 70 {
+		t.Errorf("Brand Clicks = %v, want [70 80]", got)
+	}
+	for _, f := range []struct {
+		name      string
+		got, want interface{}
+	}{
+		{"Names", strings.Join(cut.Names, ","), strings.Join(full.Names, ",")},
+		{"Entities", strings.Join(cut.Entities, ","), strings.Join(full.Entities, ",")},
+		{"GroupBy", cut.GroupBy, full.GroupBy},
+		{"Inactive", strings.Join(cut.Inactive, ","), strings.Join(full.Inactive, ",")},
+		{"Paused", strings.Join(cut.Paused, ","), strings.Join(full.Paused, ",")},
+	} {
+		if f.got != f.want {
+			t.Errorf("%s changed: %v, want %v", f.name, f.got, f.want)
+		}
+	}
+
+	// The original must be untouched -- the full window is forecast too.
+	if len(full.Days) != 4 || full.Values[AccountEntity]["Cost"][0] != 1 {
+		t.Error("lastDays modified the data it was given")
+	}
+	// A window at or beyond the file is the file.
+	if lastDays(full, 4) != full || lastDays(full, 99) != full || lastDays(full, 0) != full {
+		t.Error("a window at or beyond the file length should return it unchanged")
+	}
+}
+
+// The run label carries the window, because accuracy groups by the model column
+// and the whole point is to find out which history length forecasts best.
+func TestRunLabelCarriesTheWindow(t *testing.T) {
+	seen := map[string]bool{}
+	for _, w := range importWindows {
+		for _, m := range []string{"chronos2", "timesfm3"} {
+			l := runLabel(m, w.label)
+			if seen[l] {
+				t.Errorf("%q is not unique across windows", l)
+			}
+			seen[l] = true
+			if !strings.HasPrefix(l, m) {
+				t.Errorf("%q does not start with its model", l)
+			}
+		}
+	}
+	if seen[averageLabel] {
+		t.Errorf("the average label %q collides with a model label", averageLabel)
+	}
+}
+
+// A file too short for the models is also too short for the import, and the
+// reader has to be told the gate they must clear -- not the lower one they
+// happened to trip first. Quoting 32 at someone who needs 90 sends them back
+// with a file that will be refused again.
+func TestAShortFileNamesTheImportGateNotTheModelFloor(t *testing.T) {
+	var b strings.Builder
+	b.WriteString("Day,Campaign,Cost\n")
+	for i := 0; i < 20; i++ { // below both floors
+		fmt.Fprintf(&b, "%s,Brand,%d\n%s,Shopping,%d\n", day(i), 100+i, day(i), 200+i)
+	}
+	_, err := readCSV(writeTemp(t, "short.csv", b.String()), nil, "")
+	if err == nil {
+		t.Fatal("a 20-day file must be refused")
+	}
+
+	// readCSV reports its own floor, and carries the count so the caller can
+	// report a higher one.
+	var short tooShort
+	if !errors.As(err, &short) {
+		t.Fatalf("the refusal is not a tooShort: %T %v", err, err)
+	}
+	if short.Days != 20 {
+		t.Errorf("tooShort.Days = %d, want 20", short.Days)
+	}
+	if !strings.Contains(err.Error(), strconv.Itoa(smallestUsefulSeries)) {
+		t.Errorf("forecast's own message should name its floor: %v", err)
+	}
+
+	// What import does with it: the 90-day gate, not the 32-day one.
+	imp := enoughHistory(short.Days)
+	if imp == nil {
+		t.Fatal("20 days must not clear the import gate")
+	}
+	if !strings.Contains(imp.Error(), strconv.Itoa(importMinDays)) {
+		t.Errorf("the import refusal should name %d: %v", importMinDays, imp)
+	}
+	if strings.Contains(imp.Error(), "least 32") {
+		t.Errorf("the import refusal should not send the reader to the 32-day floor: %v", imp)
+	}
+}
+
+// The average is a real stored run so accuracy can score it, and it has to be
+// the actual mean -- of every quantile, not just the median, so the interval
+// averages too.
+func TestAverageRunIsTheMeanOfEveryQuantile(t *testing.T) {
+	db, err := openDB(filepath.Join(t.TempDir(), "a.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	entities := []string{AccountEntity, "Brand"}
+	metrics := []string{"Cost", "Clicks"}
+	days := []string{"2026-03-11", "2026-03-12"}
+	runs := []forecastRun{
+		fakeRun("chronos2@full", entities, metrics, len(days), 100, ""),
+		fakeRun("timesfm3@full", entities, metrics, len(days), 200, ""),
+	}
+
+	avg, ok, err := averageRun(db, "s", runs, days, len(days))
+	if err != nil || !ok {
+		t.Fatalf("averageRun: ok=%v err=%v", ok, err)
+	}
+	if avg.Run.Model != averageLabel {
+		t.Errorf("stored as %q, want %q", avg.Run.Model, averageLabel)
+	}
+	for _, e := range entities {
+		for mi := range metrics {
+			for di := range days {
+				for qi := range avg.Shake.Quantiles {
+					want := (runs[0].Values[e][mi][di][qi] + runs[1].Values[e][mi][di][qi]) / 2
+					if got := avg.Values[e][mi][di][qi]; got != want {
+						t.Fatalf("%s m%d d%d q%d: %v, want %v", e, mi, di, qi, got, want)
+					}
+				}
+			}
+		}
+	}
+
+	// And it is really in the database, where accuracy will find it.
+	var n int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM forecasts f JOIN runs r ON r.id=f.run_id
+	                       WHERE r.model=?`, averageLabel).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if want := len(entities) * len(metrics) * len(days) * len(avg.Shake.Quantiles); n != want {
+		t.Errorf("stored %d forecast rows, want %d", n, want)
+	}
+}
+
+// Averaging quantile grids that do not line up would invent numbers belonging to
+// neither, so a run declaring a different grid is left out. Below two runs there
+// is nothing to average and the caller gets no run at all.
+func TestAverageRunRefusesMismatchedQuantiles(t *testing.T) {
+	db, err := openDB(filepath.Join(t.TempDir(), "b.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	e, m := []string{AccountEntity}, []string{"Cost"}
+	a := fakeRun("chronos2@full", e, m, 2, 100, "")
+	odd := fakeRun("other@full", e, m, 2, 200, "")
+	odd.Shake.Quantiles = []float64{0.05, 0.5, 0.95} // a different grid
+
+	if _, ok, err := averageRun(db, "s", []forecastRun{a, odd}, []string{"d1", "d2"}, 2); err != nil || ok {
+		t.Errorf("one usable run is not an average: ok=%v err=%v", ok, err)
+	}
+	if _, ok, err := averageRun(db, "s", []forecastRun{a}, []string{"d1", "d2"}, 2); err != nil || ok {
+		t.Errorf("a single run is not an average: ok=%v err=%v", ok, err)
+	}
+}
+
+// The model column in `accuracy` and `runs` has to be wide enough for the labels
+// this code can actually produce. Adding the window made them longer, and a
+// column one character short turns the whole table into ragged noise.
+func TestTheModelColumnFitsEveryLabel(t *testing.T) {
+	longest := len(averageLabel)
+	for _, w := range importWindows {
+		for _, m := range []string{"chronos2", "timesfm3", "chronos2ft"} {
+			if n := len(runLabel(m, w.label)); n > longest {
+				longest = n
+			}
+		}
+	}
+	src, err := os.ReadFile("main.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Every width the model column is printed at, in both tables.
+	found := regexp.MustCompile(`%-(\d+)s`).FindAllStringSubmatch(string(src), -1)
+	widest := 0
+	for _, m := range found {
+		n, _ := strconv.Atoi(m[1])
+		if n > widest {
+			widest = n
+		}
+	}
+	if widest < longest {
+		t.Fatalf("the widest column in main.go is %d but labels reach %d characters", widest, longest)
+	}
+	// And specifically: the accuracy/runs model column.
+	if !strings.Contains(string(src), fmt.Sprintf("%%-%ds", 16)) {
+		t.Errorf("the model column is no longer printed at width 16; longest label is %d", longest)
+	}
+	if longest > 16 {
+		t.Errorf("labels now reach %d characters -- widen the model column past 16", longest)
 	}
 }
