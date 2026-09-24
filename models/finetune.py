@@ -141,11 +141,14 @@ def main():
     trained_through = days[-1]
     print(f"training on {len(series)} series x {len(days)} days x {len(metrics)} metrics")
     print(f"data runs {days[0]} .. {trained_through}")
-    if len(series) < 50:
-        print(f"NOTE: {len(series)} series is very little. Chronos-2 was pretrained on\n"
-              f"      millions; measured on this data, fine-tuning on 7 series made the\n"
-              f"      forecast WORSE than the stock model. Score it before trusting it.")
 
+    # Nothing here judges the data and nothing here stops. --steps is the whole
+    # instruction and every one of them runs, whatever the series count, however
+    # long it takes. An earlier version printed a warning when there were fewer
+    # than 50 series; it could not act on it, the reader had no way to act on it
+    # either, and it read as a failure in the middle of a successful run. Whether
+    # the adapter actually helps is a question for `accuracy`, which measures it
+    # against days the model never saw -- not for a guess made before training.
     from transformers.trainer_callback import TrainerCallback
 
     # Counts steps so the registry can record what was actually run. Training is

@@ -29,6 +29,12 @@ registry said `steps: 1210`, and nothing else did. How long it takes is a
 property of how much data you have; on a two-year, fourteen-campaign export it
 was about 17 minutes.
 
+**It never stops, shortens, or warns about the data.** Every step runs. Its only
+two exits are a missing column (before training) and a missing adapter (after
+it) — see `AGENTS.md` §4c, which also records why the old `NOTE:` about small
+datasets was removed rather than reworded. If you think the adapter is not
+helping, measure it below; do not make the trainer say so.
+
 It prints which campaigns it is **not** training on before it starts:
 
 ```

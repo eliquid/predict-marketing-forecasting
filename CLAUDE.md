@@ -88,6 +88,11 @@ Several things moved, so older notes may mislead:
   stay in step.** The status column is found by its *values*, never its name —
   a Google Ads export also carries `Status` and `Status reasons`, and matching on
   the word picks the wrong one.
+- **The trainer runs every step and says nothing about the data.** No time limit,
+  no size check, no `NOTE:` telling the user their dataset is small. It cannot
+  act on such a judgement and neither can the reader, and mid-run it reads as a
+  failure. Measured facts about how well the adapter does go in `AGENTS.md` §4c;
+  they do not go in the program's output.
 - **Never put a time limit on training.** A `--budget` wall clock silently cut a
   real run to 1,210 of 2,000 steps and the resulting adapter looked finished in
   every report. Removed everywhere; lower `--steps` instead (`AGENTS.md` §2c).

@@ -553,6 +553,23 @@ Training writes `models/finetuned/chronos2ft/` (4.9 MB) and records what it was
 trained on in `models/finetuned.json`. The worker checksums the adapter before
 use, exactly as the pretrained models checksum their weights.
 
+**The trainer never stops, shortens, or passes judgement.** `--steps` is the
+whole instruction and every step runs, whatever the data looks like and however
+long it takes. Its only two exits are a column that is not in the file (before
+any training happens) and an adapter that was not written (after all of it);
+neither looks at the size or shape of the data. `TestTrainingIsNeverGatedOnTheData`
+holds the line, alongside `TestTrainingIsNeverTimeLimited`.
+
+This has been got wrong twice, in both directions. A `--budget` wall clock cut a
+real run to 1,210 of 2,000 steps (§2c). And the trainer printed a `NOTE:` when a
+file had fewer than 50 series, saying fine-tuning had measured *worse* than the
+stock model — true (below), but it could not act on it, the reader could not act
+on it either, and mid-run it read as a failure in an otherwise clean import. It
+is gone from the output. Whether the adapter actually helps is a question for
+`accuracy`, measured on days the model never saw, not a guess made beforehand.
+Facts about how well it does belong in these docs, where someone is reading
+deliberately — never printed at a user who is waiting for a run to finish.
+
 The registered path is **relative to `models/`**, so moving the project does not
 break it. `share.sh` excludes both the adapter and the registry: it is fitted to
 one person's numbers and registered on their machine, so sending it would give

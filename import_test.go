@@ -470,6 +470,31 @@ func TestTrainingIsNeverTimeLimited(t *testing.T) {
 	}
 }
 
+// Nor may it stop, shorten or editorialise because it dislikes the data. The
+// trainer once printed a warning when a file had fewer than 50 series: it could
+// not act on it, the reader could not act on it either, and in the middle of a
+// successful run it read as a failure. Whether the adapter helps is a question
+// for `accuracy`, on days the model never saw -- not a guess made beforehand.
+func TestTrainingIsNeverGatedOnTheData(t *testing.T) {
+	py, err := os.ReadFile(filepath.Join("models", "finetune.py"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := string(py)
+	for _, gone := range []string{"very little", "WORSE", "< 50", "NOTE:"} {
+		if strings.Contains(src, gone) {
+			t.Errorf("finetune.py still passes judgement on the data (%q). It runs the "+
+				"steps it was given and says what it did.", gone)
+		}
+	}
+	// The only ways out are a column that is not there (before any training) and
+	// an adapter that was not written (after all of it). Neither looks at size.
+	if n := strings.Count(src, "sys.exit"); n != 2 {
+		t.Errorf("finetune.py has %d exits, want the 2 documented ones; a new one "+
+			"must not be able to stop training part-way", n)
+	}
+}
+
 // The first crosshair put its readout inside the scrolling container, so it
 // scrolled off with the content and showed nothing in practice while looking
 // fine to a synthetic mousemove. It has to live outside the scroller, and every
