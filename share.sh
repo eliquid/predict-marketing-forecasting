@@ -32,6 +32,7 @@ tar cf - \
 	--exclude='models/finetuned' \
 	--exclude='models/finetuned.json' \
 	--exclude='predictmarketing' \
+	--exclude='predict-marketing-forecasting' \
 	--exclude='*.db' --exclude='*.db-wal' --exclude='*.db-shm' \
 	--exclude='*_forecast*.html' \
 	--exclude='./data' \

@@ -1,5 +1,10 @@
 # Built by install.sh or `go build`. Rebuilt from source in seconds.
+#
+# Two names, because `go build .` and `go build ./...` do not agree: with -o they
+# write `predictmarketing`, without it they write the last element of the module
+# path. The second name once reached a commit and GitHub as an 11.8 MB blob.
 /predictmarketing
+/predict-marketing-forecasting
 /dist/
 
 # Downloaded or trained, not authored. install.sh fetches the weights and

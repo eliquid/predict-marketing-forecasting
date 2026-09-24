@@ -4,6 +4,7 @@ package main
 // thing to break by renaming a file. These checks are cheap and catch that.
 
 import (
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -204,6 +205,47 @@ func TestNoHardcodedVersionLocks(t *testing.T) {
 	} {
 		if strings.Contains(script, gate) {
 			t.Errorf("install.sh appears to refuse over a version: %q", gate)
+		}
+	}
+}
+
+// No compiled binary may be tracked in the repository.
+//
+// `go build .` writes `predictmarketing`; `go build ./...` writes the last
+// element of the module path, `predict-marketing-forecasting`. .gitignore listed
+// only the first, so a `git add -A` put an 11.8 MB Mach-O executable into a
+// commit and onto GitHub. Names are easy to miss; content is not, so this checks
+// what the files actually are.
+func TestNoBinaryIsTracked(t *testing.T) {
+	out, err := exec.Command("git", "ls-files", "-z").Output()
+	if err != nil {
+		t.Skip("not a git checkout")
+	}
+	for _, name := range strings.Split(strings.TrimRight(string(out), "\x00"), "\x00") {
+		if name == "" {
+			continue
+		}
+		f, err := os.Open(name)
+		if err != nil {
+			continue // listed but not checked out; nothing to inspect
+		}
+		head := make([]byte, 4)
+		n, _ := io.ReadFull(f, head)
+		f.Close()
+		if n < 4 {
+			continue
+		}
+		for magic, kind := range map[string]string{
+			"\xcf\xfa\xed\xfe": "a Mach-O executable",
+			"\x7fELF":          "an ELF executable",
+			"MZ\x90\x00":       "a Windows executable",
+			"\xca\xfe\xba\xbe": "a Mach-O fat binary",
+		} {
+			if string(head[:len(magic)]) == magic {
+				t.Errorf("%s is %s and is tracked by git. Build output must be "+
+					"gitignored -- check .gitignore covers the name your build "+
+					"command produces", name, kind)
+			}
 		}
 	}
 }
