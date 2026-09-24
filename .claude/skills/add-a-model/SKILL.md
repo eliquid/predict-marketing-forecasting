@@ -1,6 +1,6 @@
 ---
 name: add-a-model
-description: Wire a third forecasting model into Predict Marketing. Use when adding any new time-series model alongside timesfm3 and chronos2, or when a model's worker needs rewriting.
+description: Wire another forecasting model into Predict Marketing. Use when adding any new time-series model alongside timesfm3, chronos2 and chronos2ft, or when a model's worker needs rewriting.
 ---
 
 # Adding a model
@@ -8,8 +8,16 @@ description: Wire a third forecasting model into Predict Marketing. Use when add
 Read `AGENTS.md` §4 first — it defines the protocol this depends on.
 
 The design claim being tested is: **a new model costs one Python file and one
-line of Go.** If you find yourself editing a second Go file, stop; something is
-wrong with the change, not with the rule.
+line of Go.** That line makes it available to `forecast -model NAME`, to
+`models`, and to `report`, which redraws whatever runs are stored. If you find
+yourself editing a second Go file to make the *forecast* work, stop; something
+is wrong with the change, not with the rule.
+
+The one deliberate exception is the recurring job: `import` runs a hard-coded
+list (`[]string{"chronos2", "timesfm3"}` for report 1, then `chronos2ft`) rather
+than everything in the `models` map, because report 2 exists only for the model
+that has to be trained first. A new pretrained model that should run on every
+import needs its name in that list in `import.go` too.
 
 ## Steps
 
@@ -62,8 +70,9 @@ git diff --stat
 ```
 
 One new `.py` file, one changed line in `worker.go`, and entries in
-`models/fetch.py`/`requirements.txt`. **Any other changed Go file means the abstraction
-leaked** — find out why instead of accepting it.
+`models/fetch.py`/`requirements.txt` — plus the `import.go` model list if the
+model is meant to run on every import. **Any other changed Go file means the
+abstraction leaked** — find out why instead of accepting it.
 
 ## Then prove the model is real
 

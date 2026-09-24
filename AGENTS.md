@@ -12,7 +12,8 @@ point here rather than restating anything, so they cannot drift out of step.
 
 A Go command-line tool that forecasts daily marketing numbers — spend,
 impressions, clicks, and anything else numeric — for a whole account **and** for
-each campaign in it, using one of two pretrained time-series models:
+each campaign in it, using one of three time-series models — two pretrained, and
+one fitted to your own data:
 
 | Model | Source | Params | Licence |
 |---|---|---|---|
@@ -34,7 +35,7 @@ published, through the adapter in `models/`.
 ./install.sh                # one-time setup: Python env, build, model weights (~2.5 GB)
                             # sets up chronos2 and timesfm3; chronos2ft needs YOUR data
 go build -o predictmarketing .
-go test ./...               # 169 tests
+go test ./...               # 154 test functions, 170 cases
 go vet ./... && gofmt -l .  # must be silent
 ./predictmarketing forecast testdata/example.csv -model chronos2
 ```
@@ -57,7 +58,8 @@ only against per-IP rate limits (shared connections, CI, repeated installs); it
 does nothing if Hugging Face is blocked outright, which is what the Chronos-2
 mirror in Releases is for.
 
-Commands: `setup`, `models`, `import`, `report`, `forecast`, `runs`, `accuracy`.
+Commands: `setup`, `models`, `import`, `report`, `forecast`, `runs`, `accuracy`,
+`version`.
 
 ## 2c. The import workflow
 
@@ -83,11 +85,24 @@ when given.
 | Train `chronos2ft`, then report 2 with all three | `trainFinetune`, then `writeComparison` again |
 
 **`chronos2ft` is retrained on every import**, on the newest data, which costs
-a real stretch of CPU each time -- about 17 minutes on a two-year, fourteen-campaign
-export, and longer with more data. That is deliberate: an adapter fitted to
-last quarter's numbers quietly goes stale, and a stale model that still looks
-current is worse than no model. `-no-finetune` writes report 1 and stops, for
-when you only want the two pretrained models.
+a real stretch of CPU each time -- minutes rather than seconds. `--steps` sets
+how many steps run, but **the cost per step is not constant**, so the file does
+affect the total. Two runs on the same machine, both 2,000 steps, both
+`batch_size 8` and `context 512`:
+
+| Export | Series | Days | `train_seconds` |
+|---|---|---|---|
+| `examples/05-campaigns.csv` | 5 | 150 | 545.2 |
+| a real Google Ads export | 7 | 1,099 | 1,041.6 |
+
+Do not extrapolate a rate from two points; measure instead. Every run records its
+own `train_seconds`, `steps` and `train_series` in `models/finetuned.json`, which
+is the only figure worth quoting for a given machine and file.
+
+Retraining every time is deliberate: an adapter fitted to last quarter's numbers
+quietly goes stale, and a stale model that still looks current is worse than no
+model. `-no-finetune` writes report 1 and stops, for when you only want the two
+pretrained models.
 
 **Training is never time-limited.** `models/finetune.py` once took a `--budget` wall
 clock and `import` passed 600 seconds. On a real export that stopped training at
@@ -184,7 +199,7 @@ whether the file wrote a sign is a separate fact that would have to be stored.
 
 | | |
 |---|---|
-| `-model` | `chronos2` (default) or `timesfm3` |
+| `-model` | `chronos2` (default), `timesfm3` or `chronos2ft` |
 | `-horizon N` | days ahead, default 7 |
 | `-history N` | days of past data drawn on the chart, default 90 |
 | `-columns A,B` | which columns to forecast (commas) |
@@ -200,8 +215,8 @@ whether the file wrote a sign is a separate fact that would have to be stored.
 |---|---|
 | `-data DIR` | folder to read from, default `data` |
 | `-horizon N` | days ahead, default 7 |
-| `-history N` | days of past data drawn on the charts, default 90 |
-| `-no-finetune` | write report 1 only, skipping the ten-minute retrain |
+| `-history N` | days of past data drawn on the charts, default 0 = all of it |
+| `-no-finetune` | write report 1 only, skipping the retrain |
 | `-db FILE` | database file, default `pm.db` |
 
 `report` flags:
@@ -240,7 +255,7 @@ if only the separator is fixed, then the UTF-8 header check. Neither message
 names UTF-16 specifically; if that proves confusing in practice, that is the
 message to improve, not the guards.
 
-Converting one rather than re-downloading works and is tested:
+Converting one rather than re-downloading works, and was done on the real export:
 
 ```bash
 iconv -f UTF-16 -t UTF-8 "Campaign report.csv" | tr '\t' ',' > fixed.csv
@@ -342,7 +357,7 @@ stored forecast, which is what `accuracy` scores against.
 ## 3. Repository map
 
 ```
-main.go          commands: setup, models, import, report, forecast, runs, accuracy
+main.go          commands: setup, models, import, report, forecast, runs, accuracy, version
 import.go        the recurring job: data/ -> forecasts -> two reports -> imported/
 compare.go       the multi-model comparison report
 compare_template.go  its page, with the campaign and metric dropdowns
@@ -355,12 +370,15 @@ template.go      the report page, with htmx embedded via go:embed
 format.go        number formatting for terminal and report
 
 models/
-  timesfm3_worker.py   ~70 lines: load the model, answer requests
-  chronos2_worker.py   ~85 lines: same, plus covariate support
+  timesfm3_worker.py   load the model, answer requests
+  chronos2_worker.py   same, plus covariate support
+  chronos2ft_worker.py same again, with the LoRA adapter applied on top
+  finetune.py          trains that adapter and registers it
   weights_check.py     recomputes the weights sha256 before use
   fetch.py             downloads weights at pinned revisions
   requirements.txt     pinned, verified working together
   .venv/  cache/       created by install.sh, not in the repo
+  finetuned/  finetuned.json   written by finetune.py, not in the repo
 
 examples/
   01-simple.csv  02-marketing.csv  03-platform-export.csv  04-with-budget.csv
@@ -368,7 +386,8 @@ examples/
   walkthrough.sh       every normal use, run for real
   ground-truth.py      proves stored numbers are the library's, unaltered
 testdata/        fixtures, including deliberately broken workers
-dist/            prebuilt binaries for people without Go
+dist/            prebuilt binaries for people without Go: built by build-dist.sh
+                 when you are about to share the folder, not in the repo
 guidelines/      the two coding-style documents this project follows
 ```
 
@@ -451,8 +470,9 @@ each prediction can be scored against what actually happened — per day, per
 model, per days-ahead. That join is the whole reason the forecast table exists;
 nothing else reads it after the report is written.
 
-The one index that is not a primary key is `forecasts_median`, a partial index on
-`(entity, run_id, metric, day) WHERE quantile = 0.5`. It exists because
+Two indexes are declared beyond the primary keys: `raw_day` on `(source, day)`,
+and `forecasts_median`, a partial index on
+`(entity, run_id, metric, day) WHERE quantile = 0.5`. The second one exists because
 `forecast_accuracy` ends `WHERE f.quantile = 0.5` and quantile is the *last*
 column of the forecasts primary key, so without it every query through the view
 scans the whole table: 1.6s on a 2.3M-row file, against 12ms with it. If a plan
@@ -477,11 +497,12 @@ where the driver applies them to every connection rather than only the first.
 the table it ignores the new definition completely, without error. That is not
 theoretical: this repo's own `pm.db` predated per-entity storage, every statement
 appeared to succeed against it, and `accuracy` then failed with a bare
-`no such column: entity`. `checkSchema` now gates every open — it stamps
+`no such column: entity`. `checkSchema` now gates every open — it reads
 `user_version`, adopts a current-shaped file that simply predates stamping, and
-refuses one it cannot read with an explanation and a way out. Bump
-`schemaVersion` and teach `hasCurrentShape` the new columns whenever a table
-changes shape.
+refuses one it cannot read with an explanation and a way out. `user_version` is
+stamped only when the schema is actually written, which is what keeps opening an
+up-to-date file a pure read. Bump `schemaVersion` and teach `staleTable` (via
+`requiredColumns`) the new columns whenever a table changes shape.
 
 **Forecasts are kept so they can be scored later.** Each run records `as_of` — the
 last day of real data it was based on, which is not always the day it was run.
@@ -516,11 +537,11 @@ In order. The first rule that matches wins, and whichever applied is printed.
 
 | Rule | Test | Result |
 |---|---|---|
+| Not numeric | — | stored in `raw`, never forecast |
 | Identifier | last **word** is `id`, `ids` or `code` | stored, never forecast |
 | Setting | contains `budget`, `bid`, `target`, `limit`, `cap` | stored and aggregated, never forecast |
-| Rate | contains `ctr`, `rate`, `%`, `ratio`, `share`, `avg` | forecast; **averaged** across campaigns, not summed |
+| Rate | contains `ctr`, `rate`, `%`, `ratio`, `share`, `avg.`, `avg ` or `average` | forecast; **averaged** across campaigns, not summed |
 | Anything else numeric | — | forecast, summed across campaigns |
-| Not numeric | — | stored in `raw`, never forecast |
 
 `TestColumnClassification` pins every real Google Ads column name to its bucket.
 Two traps it exists to catch:
@@ -585,8 +606,8 @@ can train their own.
 | checkpoint | 456 MB | **4.9 MB** |
 
 Full fine-tuning is perfectly feasible here — LoRA is only 19% faster and uses the
-same peak memory at batch 8. LoRA was chosen for the 99x smaller checkpoint, which
-makes keeping a history of them practical.
+same peak memory at batch 8. LoRA was chosen for the roughly 90x smaller checkpoint (456 against 4.9, as
+the table prints them), which makes keeping a history of them practical.
 
 **Fine-tuning did not help.** On a held-out test (train to 14 days before the end,
 score the 7 days after), stock Chronos-2 scored 32.7% MAPE; full fine-tuning 34.6%
@@ -654,7 +675,7 @@ wrong answer that looked right.
 
 | | |
 |---|---|
-| Language | Go for everything except ~190 lines of Python adapter. Not "100% Go" — earlier drafts of these docs said so and were wrong. |
+| Language | Go for everything except the Python in `models/` — the three workers, the trainer and the two weights helpers, ~630 lines in all. Not "100% Go" — earlier drafts of these docs said so and were wrong. |
 | Storage | SQLite via `modernc.org/sqlite` (pure Go, no CGo, so it cross-compiles) |
 | Dependencies | That one, and nothing else. Standard library for the rest. |
 | Output | A static HTML file you double-click. **No server. No `serve` command.** |
@@ -668,7 +689,7 @@ wrong answer that looked right.
 
 - A forecast takes **~3 seconds** whether the horizon is 7 days or 400 — almost all
   of it is loading the model. Hence the 5-minute timeout is ~100x headroom.
-- Python side installed: **~800 MB** (torch is 558 MB of it). Weights: **1.7 GB**.
+- Python side installed: **~820 MB** (torch is ~570 MB of it). Weights: **1.7 GB**.
 - A clean `./install.sh` measured **182 seconds** on a fast connection.
 - ONNX: Chronos-2 has **no path** — `torch.export` cannot capture it because it
   branches on whether the input contains NaN, and that handling is real semantics.
@@ -691,8 +712,13 @@ go test -count=1 ./...     # all pass
 If you touched anything between the CSV and the database, **re-prove ground truth**:
 call the Python library directly on the same matrix and compare to what was stored.
 ```bash
-models/.venv/bin/python examples/ground-truth.py /tmp/gt.db
+./predictmarketing forecast examples/02-marketing.csv -model chronos2 -db /tmp/gt.db
+./predictmarketing forecast examples/02-marketing.csv -model timesfm3 -db /tmp/gt.db
+models/.venv/bin/python examples/ground-truth.py /tmp/gt.db examples/02-marketing.csv
 ```
+
+The script reads the runs back out of that database, so both forecasts have to be
+made first; on an empty one it stops at `no such table: runs`.
 
 Every line must say `EXACT`. The stored numbers must equal the library's output
 exactly, sorted only where the model's own quantiles crossed.

@@ -2,7 +2,8 @@
 
 **Read `AGENTS.md` first. It is the single source of truth** for what this project
 is, how to build and test it, the model protocol, the hard rules, and the settled
-decisions. Nothing from it is repeated here, so the two cannot drift apart.
+decisions. Nothing here re-argues it: where this file summarises a rule it names
+the section to check, and `AGENTS.md` wins when the two disagree.
 
 This file holds only what is specific to working here as Claude.
 
@@ -42,7 +43,7 @@ facts belong in `AGENTS.md`.
 |---|---|
 | `new-export` | a fresh ad-platform CSV arrives — the recurring job |
 | `finetune` | training or retraining the `chronos2ft` adapter |
-| `add-a-model` | wiring a third forecasting model in |
+| `add-a-model` | wiring another forecasting model in alongside the three there are |
 | `verify` | proving a change is sound before saying it works |
 | `sqlite-optimization` | touching the schema, a pragma, an index or a query plan |
 

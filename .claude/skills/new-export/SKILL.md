@@ -19,8 +19,11 @@ cp "Campaign report.csv" data/
 ./predictmarketing import
 ```
 
-Run it from anywhere: `data/` and `pm.db` are anchored to the installation, not
-to the shell, so there is one folder and one database no matter where you stand.
+Run the binary from anywhere: `data/` and `pm.db` are anchored to the
+installation, not to the shell, so there is one folder and one database no matter
+where you stand. The `data/` the CSV goes into is the **installation's** one for
+the same reason — copy it somewhere else and `import` will say, with the full
+path, that it found no files.
 
 That is the whole job: it forecasts with every model, writes report 1
 (`chronos2` + `timesfm3`) immediately, puts the reports in `data/reports/`, files the CSV into `data/imported/`, then
@@ -128,7 +131,8 @@ next forecast.
 | `X has N rows but Y has M` | a campaign is missing from some days; adding them up would invent a step |
 | `several columns could separate them` | pick one with `-by "Campaign"` |
 | `a Campaign is called "(account)"` | name clash with the total; use `-by "Campaign ID"` |
-| `N days is too few` | fewer than 32 days of history |
+| `only N days of history, and at least 90 are needed` | `import`'s own gate, hit before any of the above; the CSV is left in `data/` |
+| `N days is too few` | fewer than 32 days of history — the floor `forecast` refuses at |
 
 None of these are worth working around by editing the CSV's numbers. Fix the
 export.
@@ -146,10 +150,17 @@ ORDER BY day DESC LIMIT 20;
 
 ## Afterwards
 
-Each run leaves a report next to the CSV and appends to `pm.db`. Both are
-gitignored, and `pm.db` is what `accuracy` scores against, so keep it. Clear only
-the reports when they pile up:
+A `forecast` run leaves a report beside the CSV and appends to whatever `-db`
+named (`ads.db` in the steps above, otherwise `pm.db`). An `import` run puts its
+two reports in `data/reports/` instead. Reports and databases are all gitignored,
+and the database is what `accuracy` scores against, so keep it. Clear only the
+reports when they pile up:
 
 ```bash
-find . -name '*_forecast_*.html' -not -path './models/*' -delete
+find . -name '*_forecast_*.html' -not -path './models/*' -delete   # forecast's
+find data/reports -name '*.html' -delete                           # import's
 ```
+
+`find`, not `rm *.html`: zsh fails the whole command when a glob matches nothing.
+
+`report` rewrites the second set from the database whenever you want them back.

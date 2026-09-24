@@ -1,5 +1,8 @@
 #!/bin/sh
-# Every way this tool is normally used, run for real.
+# The single-file commands, run for real: forecast, models, runs.
+#
+# Not the recurring job -- `import`, `report` and `accuracy` are not exercised
+# here. See AGENTS.md 2c for those.
 #
 #     ./examples/walkthrough.sh
 #

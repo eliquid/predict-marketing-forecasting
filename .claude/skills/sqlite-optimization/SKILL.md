@@ -164,8 +164,10 @@ This skill is general-purpose reference, kept verbatim from source above. Read
 `AGENTS.md` §4a first for what this project's schema actually is before applying
 any of the above.
 
-An audit against this skill ran in round 29 and the findings are fixed, so the
-checklist should now come back clean. What it changed, and what to leave alone:
+An audit against this skill ran in round 29 and the findings are fixed. The
+checklist should come back clean apart from the three items below that are
+deliberately not met — contexts, a connection pool and backups. What the audit
+changed, and what to leave alone:
 
 - **`foreign_keys` is on**, set in the DSN in `openDB` so it reaches every
   connection the driver opens rather than only the first. `forecasts` has always

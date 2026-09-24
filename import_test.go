@@ -468,6 +468,18 @@ func TestTrainingIsNeverTimeLimited(t *testing.T) {
 	if !strings.Contains(string(src), `"--steps"`) {
 		t.Error("import.go no longer tells the trainer how many steps to run")
 	}
+
+	// install.sh prints a command for the user to copy, and it went on printing
+	// `--budget 600` for three commits after the flag was deleted -- so the very
+	// first thing a new user was told to run failed with "unrecognized
+	// arguments". Anywhere that quotes the trainer's command line counts.
+	sh, err := os.ReadFile("install.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(sh), "--budget") {
+		t.Error("install.sh tells the user to pass --budget, which no longer exists")
+	}
 }
 
 // Nor may it stop, shorten or editorialise because it dislikes the data. The

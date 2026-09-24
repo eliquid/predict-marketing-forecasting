@@ -25,9 +25,10 @@ models/.venv/bin/python models/finetune.py "Campaign report.csv" --steps 2000
 `--steps` is the whole instruction and it runs all of them. **There is no time
 limit, and there must not be one.** A clock that ended training early left an
 adapter that was undertrained but looked finished everywhere it was used -- the
-registry said `steps: 1210`, and nothing else did. How long it takes is a
-property of how much data you have; on a two-year, fourteen-campaign export it
-was about 17 minutes.
+registry said `steps: 1210`, and nothing else did. How long it takes depends on
+both the step count and the file — `AGENTS.md` §2c has the two runs that were
+actually measured. Read `train_seconds` out of `models/finetuned.json` after a
+run rather than quoting a figure at anyone.
 
 **It never stops, shortens, or warns about the data.** Every step runs. Its only
 two exits are a missing column (before training) and a missing adapter (after
@@ -80,7 +81,7 @@ Never write an accuracy query without `trained_on = 0`.
 ## What was already measured, so you need not redo it
 
 Full fine-tuning is feasible on an M1 Pro with 32 GB — LoRA is only 19% faster and uses
-the same peak memory. LoRA was chosen for the 99x smaller checkpoint.
+the same peak memory. LoRA was chosen for the roughly 90x smaller checkpoint.
 
 Fine-tuning on 7 series made the forecast **worse** (34.5% MAPE vs 32.7% stock).
 If you are asked to improve on that, the lever is **more series**, not more steps

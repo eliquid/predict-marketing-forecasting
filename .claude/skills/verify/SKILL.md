@@ -35,11 +35,19 @@ nobody has trained one** — it is not a failure. Train it, or skip that line.
 If you touched anything between the CSV and the database, the stored numbers must
 still be exactly what the library returns.
 
+The script reads the runs out of the database, so the two forecasts have to be
+stored in it first — on an empty or missing file it dies with
+`sqlite3.OperationalError: no such table: runs`.
+
 ```bash
+rm -f /tmp/gt.db
+./predictmarketing forecast YOUR.csv -model chronos2 -db /tmp/gt.db
+./predictmarketing forecast YOUR.csv -model timesfm3 -db /tmp/gt.db
 models/.venv/bin/python examples/ground-truth.py /tmp/gt.db YOUR.csv
 ```
 
-It checks **every entity** — the account and each campaign — for both models.
+It checks **every entity that was forecast** — the account and each switched-on
+campaign — for both models.
 
 Every line must say `EXACT`. The only permitted difference between stored output
 and library output is sorting, and only where the model's own quantiles crossed.
@@ -49,13 +57,21 @@ Anything else means the pipeline is altering forecasts.
 
 ```bash
 ./predictmarketing forecast YOUR-EXPORT.csv -model chronos2 -db /tmp/c.db
-sqlite3 /tmp/c.db "SELECT COUNT(*) FROM raw"          # every input row kept
-sqlite3 /tmp/c.db "SELECT DISTINCT entity FROM forecasts"   # account + campaigns
+sqlite3 /tmp/c.db "SELECT COUNT(*) FROM raw"                # every input row kept
+sqlite3 /tmp/c.db "SELECT DISTINCT entity FROM series"      # account + EVERY campaign
+sqlite3 /tmp/c.db "SELECT DISTINCT entity FROM forecasts"   # account + switched-on only
 ```
+
+The two entity lists are **meant to differ**: everything is stored, only the
+campaigns the export says are switched on as of its last day are forecast
+(`AGENTS.md` §2a1). `series` short of a campaign that is in `raw` is a bug;
+`forecasts` short of a paused one is not.
 
 The campaign forecasts should sum to roughly the account forecast — they are
 produced independently, so expect a few percent, not an exact match. A large gap
-means something is wrong with the aggregation.
+means something is wrong with the aggregation. Note the account total is the sum
+of *all* campaigns including the paused ones, so a file with paused spend in it
+will not add up from the forecast entities alone.
 
 ## 3b. If you touched column classification
 
@@ -122,13 +138,18 @@ end rather than only its units:
 
 ```bash
 mkdir -p /tmp/v/data && cp examples/05-campaigns.csv /tmp/v/data/
-(cd /tmp/v && /path/to/predictmarketing import -no-finetune)
+./predictmarketing import -no-finetune -data /tmp/v/data -db /tmp/v/pm.db
 ```
+
+`-data` and `-db` are not optional here. `cd`-ing into `/tmp/v` and running
+`import` with no flags reads the **installation's** `data/`, not the one you just
+filled — that is the whole point of `defaultPath`, checked at the end of this
+file. A scratch import has to name its folder.
 
 Four things must be true afterwards:
 
-- `data/reports/05-campaigns_models.html` exists and holds **both** models
-- the CSV has moved to `data/imported/`, not been copied or deleted
+- `/tmp/v/data/reports/05-campaigns_models.html` exists and holds **both** models
+- the CSV has moved to `/tmp/v/data/imported/`, not been copied or deleted
 - a file under 90 days is refused and **left in place**
 - the report opens from `file://` with both dropdowns working
 
@@ -149,7 +170,7 @@ and passed. Look at the page.
 Once one import has stored its runs, do not import again to see a chart change.
 
 ```bash
-(cd /tmp/v && /path/to/predictmarketing report)
+./predictmarketing report -data /tmp/v/data -db /tmp/v/pm.db
 ```
 
 It redraws `data/reports/` from the database — nothing read, nothing forecast,

@@ -118,8 +118,9 @@ echo "  A third is optional and trained on your own data:"
 echo "    chronos2ft  Chronos-2 + a LoRA adapter fitted to your numbers"
 echo "    Everything it needs is installed. It has nothing to learn from until"
 echo "    you have a CSV, so train it whenever you like:"
-echo "      models/.venv/bin/python models/finetune.py YOUR.csv --steps 2000 --budget 600"
-echo "    Takes about 10 minutes. See .claude/skills/finetune/ before relying on it."
+echo "      models/.venv/bin/python models/finetune.py YOUR.csv --steps 2000"
+echo "    It runs every step it is given, so allow it minutes rather than seconds."
+echo "    See .claude/skills/finetune/ before relying on it."
 fi
 echo
 echo "  Try it now:"

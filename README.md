@@ -68,8 +68,9 @@ Everything above, and every measurement quoted in this README, was run on:
 
 That is the only machine it has been tested on. It is pure Go plus Python, with
 no platform-specific code, so Linux and Intel Macs should be fine — but "should"
-is doing real work in that sentence, and nobody has checked. Windows builds and
-runs the program, though `install.sh` is a shell script (see **Building**).
+is doing real work in that sentence, and nobody has checked. A Windows binary
+cross-compiles cleanly — that much has been run — but no Windows machine has
+executed it, and `install.sh` is a shell script (see **Building**).
 
 Timings scale with the machine. A forecast takes three to four seconds here
 (3.1s and 3.9s on two consecutive runs of `testdata/example.csv`), almost all of
@@ -118,9 +119,10 @@ go build -o predictmarketing .
 ./share.sh ~/Dropbox/predict-marketing
 ```
 
-That makes a ~31 MB copy — the code, plus prebuilt programs in `dist/` for people
-without Go. It leaves out the Python environment, the model weights and your own
-databases, which is the 2.5 GB their `./install.sh` downloads fresh anyway.
+That makes a ~34 MB copy — the code, plus prebuilt programs in `dist/` for people
+without Go, which are most of that. It leaves out the Python environment, the
+model weights, any fine-tuned adapter and your own databases, which is the 2.5 GB
+their `./install.sh` downloads fresh anyway.
 
 Hand them the folder. They open a terminal in it and run **one command**:
 
@@ -131,9 +133,9 @@ Hand them the folder. They open a terminal in it and run **one command**:
 Run `./build-dist.sh` first if you have changed the code and want the prebuilt
 programs refreshed.
 
-**Windows:** the program builds and runs, but `install.sh` is a shell script, so
-use the by-hand steps above (they work in PowerShell with small changes) or run
-it under WSL.
+**Windows:** the program cross-compiles for Windows, but nobody has run it there,
+and `install.sh` is a shell script, so use the by-hand steps above (they work in
+PowerShell with small changes) or run it under WSL.
 
 ### Your first forecast
 
@@ -232,11 +234,16 @@ That one command:
    been read yet. Nothing is overwritten: a second file of the same name gets a
    timestamp.
 6. **Trains the third model on your data and writes report 2** — the same two
-   models plus `chronos2ft`. Training runs to completion — no time limit, so how
-   long depends on your data; about 17 minutes for a two-year, fourteen-campaign
-   export. **Report 1 is already on disk**, so read it while this runs.
+   models plus `chronos2ft`. Training runs to completion — no time limit. Two
+   runs measured on the machine above, both 2,000 steps: **about 17 minutes**
+   (1,042s) on a three-year, fifteen-campaign export, and about **9 minutes**
+   (545s) on the small `examples/05-campaigns.csv`. Your own run records its
+   time in `models/finetuned.json`. **Report 1 is already on disk**, so read it
+   while this runs.
 
 ```
+1 file(s) to import from data/
+
 05-campaigns.csv: 150 days, enough to forecast; 365 days would be better
   5 rows per day, split by "Campaign"
   forecasting: Cost, Impr., Clicks
@@ -244,6 +251,7 @@ That one command:
   switched off in the export, stored but not forecast: Video Awareness
 
   running chronos2
+
   running timesfm3
 
   report 1 of 2: data/reports/05-campaigns_models.html
@@ -261,9 +269,9 @@ ahead — the first solid, the rest dashed, each named where it ends. Report 1
 has two model lines, report 2 has three. Dashes as well as colour, so the lines
 are still tellable apart in greyscale or to a colour-blind reader.
 
-Above each chart, three figures: what was actually spent over the window drawn,
-and what each model expects over the days ahead. They follow the dropdowns, so
-they always describe the chart you are looking at.
+Above each chart: what was actually spent over the window drawn, and what each
+model expects over the days ahead — three figures in report 1, four in report 2.
+They follow the dropdowns, so they always describe the chart you are looking at.
 
 The forecast is drawn **five times wider than the history**, because it is the
 shortest part of the series and the reason the page exists — at equal spacing it
@@ -312,8 +320,8 @@ same names, in a moment. **Nothing is forecast, nothing is retrained and nothing
 is written to the database** — which is the point, since retraining the third
 model is the part measured in minutes.
 
-It draws the newest run of each model, and only runs made from the same amount
-of history, so the lines on a chart are always comparing like with like.
+It draws the newest run of each model, and only runs made from the same last day
+of real data, so the lines on a chart are always comparing like with like.
 
 ```
 -series NAME    which dataset (default: every one that has forecasts)
@@ -343,8 +351,8 @@ the export again if you want the sign.
 `forecast` options:
 
 ```
--model NAME     chronos2 (default) or timesfm3
--horizon N      days ahead (default 7, both models)
+-model NAME     chronos2 (default), chronos2ft or timesfm3
+-horizon N      days ahead (default 7)
 -history N      days of past data drawn on the chart (default 90)
 -columns A,B    which columns to forecast (default: every column of numbers)
 -entities A;B   which campaigns, separated by ; (default: all, plus the account
@@ -441,8 +449,10 @@ of order, failed validation, and took the entire second report down with it.
 The campaign dropdown in the report lists what was forecast, so paused campaigns
 are in the database but not in the menu.
 
-If your export has no status column, campaigns whose every metric is flat for the
-whole period are excluded instead, on the same grounds.
+A second rule runs alongside it, status column or not: a campaign whose every
+forecastable metric is flat for the whole period is left out too, on the same
+grounds — the answer is the constant it already is. That is what covers an export
+with no status column, and a campaign switched on but never funded.
 
 Everything from the original file is kept in the `raw` table for ad-hoc questions:
 
@@ -469,7 +479,7 @@ Only want some of them?
 Get a name wrong and it lists the real ones:
 
 ```
-error: no column named "Costs". Columns that hold numbers: Impressions, Clicks, Cost
+error: examples/05-campaigns.csv: no column named "Costs". Columns that hold numbers: Cost, Impr., Clicks
 ```
 
 The report has a chart and a table per metric. Double-click the file it names.
@@ -645,8 +655,10 @@ models/.venv/bin/python models/finetune.py "your-export.csv" --steps 2000
 ```
 
 It runs every step it was given; there is no time limit. How long that takes
-depends on how much data you have — on a two-year, fourteen-campaign export it
-was about 17 minutes. It has **not** beaten the stock models on the data tried so far
+depends on both the step count and the file — 2,000 steps measured 1,042s on a
+three-year, fifteen-campaign export and 545s on the small example, so allow
+minutes rather than seconds and read the real figure out of
+`models/finetuned.json` afterwards. It has **not** beaten the stock models on the data tried so far
 (34.5% average error against 32.7%) — seven campaigns is very little to fine-tune
 on. Score it with `accuracy` before relying on it.
 
@@ -672,13 +684,13 @@ moves the forecast the way you would expect:
 Name a column that is not in the CSV and it refuses, listing what is:
 
 ```
-error: -future nosuch: no column named "nosuch" in data.csv (columns: spend, budget)
+error: -future nosuch: no numeric column named "nosuch" in data.csv (columns: spend, budget)
 ```
 
 Ask TimesFM for the same thing and it refuses, loudly:
 
 ```
-error: model "timesfm3" cannot use known-future values, and 1 were given.
+error: (account): model "timesfm3" cannot use known-future values, and 1 were given.
 Use a model that supports them, or drop them -- they will not be silently ignored
 ```
 
@@ -695,39 +707,49 @@ main.go              the command line
 ingest.go            reading CSV
 db.go                SQLite: series, runs, forecasts
 worker.go            talking to the models  <- the interesting one
+import.go            the recurring job: data/ in, two reports out
 report.go            drawing the chart
 template.go          the HTML page
+compare.go           the two- and three-model comparison page
+compare_template.go  its HTML, dropdowns and crosshair
+rerender.go          redrawing those pages from what is already stored
 pm_test.go           one test per way this can go quietly wrong
 
 models/
-  timesfm3_worker.py   ~60 lines each: load the model, answer requests
+  timesfm3_worker.py   one small file each: load the model, answer requests
   chronos2_worker.py
+  chronos2ft_worker.py
+  finetune.py          trains the chronos2ft adapter on your own export
   fetch.py             downloads weights at pinned revisions
   requirements.txt     pinned, verified working together
   weights.json         where the weights are and their checksums
   cache/               the weights themselves (1.7 GB, not in git)
   .venv/               the Python environment (not in git)
 
-testdata/            example CSV, vendored htmx
+testdata/            example CSV
+assets/              vendored htmx, inlined into every report
 PLAN.md              why it is built this way
 FINDINGS-onnx.md     why the models still need Python
 guidelines/          the two documents that govern the code
 ```
 
-## Adding a third model
+## Adding another model
 
 One Python file, and one line in `worker.go`:
 
 ```go
 var models = map[string]string{
-    "timesfm3": "models/timesfm3_worker.py",
-    "chronos2": "models/chronos2_worker.py",
+    "timesfm3":   "models/timesfm3_worker.py",
+    "chronos2":   "models/chronos2_worker.py",
+    "chronos2ft": "models/chronos2ft_worker.py", // Chronos-2 + a LoRA adapter trained on your data
 }
 ```
 
-That map is the only place in the Go code that knows a model exists. Copy a
-worker, change what it loads, add the line. **No other Go file changes** — if one
-has to, the design has sprung a leak.
+That map is the only place in the Go code that has to learn a model exists. Copy
+a worker, change what it loads, add the line. **No other Go file changes** — the
+one exception is `import.go`, which names the models the recurring job runs, and
+only if yours is meant to run on every import. Anything beyond that and the
+design has sprung a leak.
 
 Each worker announces itself on startup: which weights, which versions, whether
 it accepts known-future values. Go asks rather than assumes, and stores that
@@ -761,7 +783,7 @@ stuck rather than busy
 ## Testing
 
 ```bash
-go test ./...                                   # 169 tests
+go test ./...                                   # 154 test functions, 170 cases
 go test -race -count=2 ./...                    # state leakage between tests
 go test -run '^$' -fuzz FuzzReadCSV -fuzztime 60s
 ```
@@ -787,12 +809,17 @@ still exactly as it was made.
 forecast vs actual for (account)
 
   model      metric             days  avg error      bias  in range
-  chronos2   Clicks               28      16.3%     +2.1%       61%
-  chronos2   Cost                 28      13.8%     +2.2%       57%
-  timesfm3   Cost                 28      11.7%     +0.1%       75%
-  timesfm3   Impr.                28      17.2%    +11.8%       89%
+  chronos2   Clicks                7       3.8%     -0.1%       57%
+  chronos2   Cost                  7       2.3%     +0.7%       86%
+  chronos2   Impr.                 7       5.7%     +3.8%       86%
+  timesfm3   Clicks                7       3.7%     -0.3%       57%
+  timesfm3   Cost                  7       2.0%     -0.3%       86%
+  timesfm3   Impr.                 7       5.8%     +4.0%       86%
 
   21 forecast days are still waiting for their actuals.
+  avg error is how far off, ignoring direction. bias is the direction:
+  positive means the forecast ran high. in range is how often the
+  actual landed inside the q10-q90 band, which should be about 80%.
 ```
 
 `-by-day` shows how accuracy decays with the horizon, `-entity` picks one
@@ -807,7 +834,9 @@ agent-agnostic — Claude, Codex, Gemini, Qwen, Cursor, or a person.
 
 - `CLAUDE.md` and `.claude/skills/` point at it rather than restating it, so they
   cannot drift out of step. Tests enforce both the pointing and the file references.
-- `examples/walkthrough.sh` runs every normal use of the tool for real.
+- `examples/walkthrough.sh` runs the single-file `forecast` paths for real —
+  every model, every flag that matters, and the refusals. It does not cover
+  `import`, `report` or `accuracy`.
 - `examples/ground-truth.py` proves the stored numbers are the models' own.
 
 ## Building

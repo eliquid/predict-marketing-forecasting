@@ -8,7 +8,7 @@ trained on in models/finetuned.json. The base weights are never touched.
 LoRA rather than full fine-tuning, measured on this machine:
   full  2.5 steps/s, 3.3 GB peak, 456 MB checkpoint
   lora  3.0 steps/s, 3.3 GB peak, 4.9 MB checkpoint
-Both are comfortable; LoRA is chosen for the 99x smaller checkpoint, which makes
+Both are comfortable; LoRA is chosen for the roughly 90x smaller checkpoint, which makes
 keeping a history of them practical.
 
 IMPORTANT: the training cutoff is recorded as `trained_through`. Scoring the
