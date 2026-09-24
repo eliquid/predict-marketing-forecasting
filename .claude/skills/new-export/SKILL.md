@@ -130,6 +130,7 @@ next forecast.
 | `N day(s) missing between X and Y` | the export has a gap; re-export a complete range |
 | `X has N rows but Y has M` | a campaign is missing from some days; adding them up would invent a step |
 | `several columns could separate them` | pick one with `-by "Campaign"` |
+| `hold measured numbers rather than names` | the only column that fits is a metric (`Cost`). The export has no usable campaign column — re-export with `Campaign` or `Campaign ID` in it |
 | `a Campaign is called "(account)"` | name clash with the total; use `-by "Campaign ID"` |
 | `only N days of history, and at least 90 are needed` | `import`'s own gate, hit before any of the above; the CSV is left in `data/` |
 | `N days is too few` | fewer than 32 days of history — the floor `forecast` refuses at |

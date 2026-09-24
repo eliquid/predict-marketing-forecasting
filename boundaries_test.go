@@ -404,3 +404,62 @@ func TestColumnsFlagNamesTheRealReason(t *testing.T) {
 		}
 	}
 }
+
+// A quantity is never a label. "Cost" having exactly as many distinct values as
+// there are campaigns is a coincidence, and the fallback to a numeric column
+// used to take it: a file whose campaign names changed mid-period was grouped by
+// Cost, silently, so prices became campaign names and Cost left the forecast.
+//
+// The numeric fallback exists for "Campaign ID", which is a real answer. The
+// distinction is one the tool already makes everywhere else (AGENTS.md 4b), so
+// it makes it here too.
+func TestAMetricIsNeverTheCampaignColumn(t *testing.T) {
+	// Two rows a day, no usable name column, and Cost happens to have exactly
+	// two distinct values.
+	var b strings.Builder
+	b.WriteString("Day,Campaign,Cost\n")
+	for i := 0; i < 40; i++ {
+		name := "Shopping"
+		if i == 20 {
+			name = "Renamed" // a third value, so Campaign no longer separates
+		}
+		fmt.Fprintf(&b, "%s,Brand,120\n%s,%s,500\n", day(i), day(i), name)
+	}
+	_, err := readCSV(writeTemp(t, "metric.csv", b.String()), nil, "")
+	if err == nil {
+		t.Fatal("grouping by a measured column must be refused, not chosen silently")
+	}
+	for _, want := range []string{"Cost", "measured", "-by"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the refusal should mention %q, got: %v", want, err)
+		}
+	}
+
+	// Asking for it outright is refused too, and says why rather than "no column".
+	_, err = readCSV(writeTemp(t, "metric2.csv", b.String()), nil, "Cost")
+	if err == nil {
+		t.Fatal(`-by "Cost" must be refused`)
+	}
+	if !strings.Contains(err.Error(), "measured") {
+		t.Errorf("-by on a metric should explain why, got: %v", err)
+	}
+
+	// An identifier is still a valid fallback: that is what the branch is for.
+	var id strings.Builder
+	id.WriteString("Day,Campaign ID,Cost,Clicks\n")
+	for i := 0; i < 40; i++ {
+		fmt.Fprintf(&id, "%s,1001,%d,%d\n%s,1002,%d,%d\n",
+			day(i), 100+i, 5+i, day(i), 200+i, 9+i)
+	}
+	d, err := readCSV(writeTemp(t, "id.csv", id.String()), nil, "")
+	if err != nil {
+		t.Fatalf("Campaign ID must still separate campaigns: %v", err)
+	}
+	if d.GroupBy != "Campaign ID" {
+		t.Errorf("grouped by %q, want Campaign ID", d.GroupBy)
+	}
+	// And it must not have been forecast as a quantity along the way.
+	if slicesContainsFold(d.Names, "Campaign ID") {
+		t.Error("Campaign ID was both the group column and a forecast metric")
+	}
+}

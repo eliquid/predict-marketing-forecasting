@@ -471,7 +471,7 @@ over 262 days arrives as 3,930 rows. That shape drives most of the design.
 
 | What | What happens |
 |---|---|
-| Repeated days | Not an error. The column whose distinct values match the rows-per-day is the campaign column (override with `-by`). |
+| Repeated days | Not an error. The column whose distinct values match the rows-per-day is the campaign column (override with `-by`). Only a **label** qualifies: a text column, or a numeric one that looks like an identifier (`Campaign ID`). A measured column is never chosen, however well its value count happens to fit — see below. |
 | Each campaign | Forecast on its own series. |
 | The account | The sum of every campaign per day, forecast as its own series. `(account)` is its name. |
 | Uneven rows per day | **Refused.** A day missing a campaign would put a step in the totals that never happened. |
@@ -498,6 +498,17 @@ protect, with the account total still correct so nothing looked wrong.
 Both now refuse the file and name the day, the campaign and which way it differs.
 A campaign that appears on one day and nowhere else cannot arise on its own: it
 changes the file's distinct count and `findGroupColumn` refuses first.
+
+**A measured column is never used to split campaigns.** The fallback to a numeric
+column exists for `Campaign ID`, which is a real answer. It used to accept any
+numeric column with the right number of distinct values, so a file whose campaign
+names changed mid-period was silently grouped by **`Cost`**: prices became the
+campaign names, and `Cost` left the forecast entirely. `findGroupColumn` runs after
+classification (§4b), so it now asks the question the rest of the tool already
+answers — a numeric column is a candidate only when `looksLikeIdentifier` says it
+is a label. If the only column that fits is a quantity, the file is refused and the
+message names it; `-by` on a metric is refused for the same reason rather than
+obeyed.
 
 **A campaign renamed or replaced part-way through the export cannot be imported
 at all.** `findGroupColumn` counts a column's distinct values over the *whole
@@ -1323,6 +1334,7 @@ a hypothetical. The ones worth knowing about, because they are easy to reintrodu
 | Stamping `user_version` on every open | turned every read into a write, so `accuracy` failed outright on a database on read-only media |
 | Doc and installer tests asserting that generated paths exist | passed in a working copy, failed in the bundle a recipient unpacks: ten failures before anyone could run `./install.sh` |
 | Campaign totals added without a finite check | individually-finite values could sum to +Inf in the account series, which SQLite stores silently and every later total, axis and average inherits |
+| Falling back to any numeric column as the campaign column | a file whose campaign names changed mid-period was grouped by `Cost` — prices became campaign names and the metric left the forecast, silently |
 | The console summary indexing the account unconditionally | every `-entities` run that excluded the account panicked with "index out of range [0] with length 0"; the report template had been fixed for this, the summary beside it had not |
 
 | Counting rows per day but never the campaigns in them | a day listing one campaign twice and another not at all passed: the duplicate stored as 1119 against a true 120, the absent one as a fabricated 0, account total still correct |

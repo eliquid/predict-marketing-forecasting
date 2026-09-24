@@ -757,30 +757,54 @@ func findGroupColumn(path string, names []string, numeric []bool, rows []row,
 		}
 	}
 
+	// A quantity is never a label. "Cost" having exactly as many distinct values
+	// as there are campaigns is a coincidence, and grouping by it turns prices
+	// into campaign names and removes the metric from the forecast entirely.
+	// Classification has already run by the time this is called, so the question
+	// can simply be asked: a numeric column is a candidate only when it looks
+	// like an identifier ("Campaign ID"), never when it is a metric or a setting.
+	label := func(c int, n string) bool { return !numeric[c] || looksLikeIdentifier(n) }
+
 	if asked != "" {
 		for c, n := range names {
-			if strings.EqualFold(strings.TrimSpace(n), strings.TrimSpace(asked)) {
-				if len(distinct[c]) != rowsPerDay {
-					return "", fmt.Errorf("%s: -by %q has %d distinct values but there are "+
-						"%d rows per day, so it does not separate them%s",
-						path, n, len(distinct[c]), rowsPerDay,
-						nearDuplicates(distinct[c], rowsPerDay))
-				}
-				return n, nil
+			if !strings.EqualFold(strings.TrimSpace(n), strings.TrimSpace(asked)) {
+				continue
 			}
+			if !label(c, n) {
+				return "", fmt.Errorf("%s: -by %q, but %q holds numbers that are "+
+					"measured, not a name. Splitting on it would turn its values into "+
+					"campaign names and drop it from the forecast. Use the campaign "+
+					"column, or its ID", path, n, n)
+			}
+			if len(distinct[c]) != rowsPerDay {
+				return "", fmt.Errorf("%s: -by %q has %d distinct values but there are "+
+					"%d rows per day, so it does not separate them%s",
+					path, n, len(distinct[c]), rowsPerDay,
+					nearDuplicates(distinct[c], rowsPerDay))
+			}
+			return n, nil
 		}
 		return "", fmt.Errorf("%s: no column named %q", path, asked)
 	}
 
-	var text, numericCand []string
+	var text, ids, measured []string
 	for c, n := range names {
-		if len(distinct[c]) == rowsPerDay {
-			if numeric[c] {
-				numericCand = append(numericCand, n)
-			} else {
-				text = append(text, n)
-			}
+		if len(distinct[c]) != rowsPerDay {
+			continue
 		}
+		switch {
+		case !numeric[c]:
+			text = append(text, n)
+		case looksLikeIdentifier(n):
+			ids = append(ids, n)
+		default:
+			measured = append(measured, n) // counted only so the refusal can say so
+		}
+	}
+	tooMany := func(cands []string) error {
+		return fmt.Errorf("%s: %d rows per day, and several columns could separate "+
+			"them (%s). Choose one with -by NAME", path, rowsPerDay,
+			strings.Join(cands, ", "))
 	}
 	// Prefer a text column: "Campaign" reads better than "Campaign ID", and both
 	// identify the same thing.
@@ -788,14 +812,22 @@ func findGroupColumn(path string, names []string, numeric []bool, rows []row,
 	case len(text) == 1:
 		return text[0], nil
 	case len(text) > 1:
-		return "", fmt.Errorf("%s: %d rows per day, and several columns could separate "+
-			"them (%s). Choose one with -by NAME", path, rowsPerDay, strings.Join(text, ", "))
-	case len(numericCand) == 1:
-		return numericCand[0], nil
-	case len(numericCand) > 1:
-		return "", fmt.Errorf("%s: %d rows per day, and several columns could separate "+
-			"them (%s). Choose one with -by NAME", path, rowsPerDay,
-			strings.Join(numericCand, ", "))
+		return "", tooMany(text)
+	case len(ids) == 1:
+		return ids[0], nil
+	case len(ids) > 1:
+		return "", tooMany(ids)
+	}
+	// Nothing that names anything. Say whether the problem is that no column fits
+	// at all, or that the only ones that fit are quantities -- they need different
+	// answers from the reader, and the second used to be taken silently.
+	if len(measured) > 0 {
+		return "", fmt.Errorf("%s: there are %d rows per day, and the only column(s) "+
+			"with %d distinct values (%s) hold measured numbers rather than names. "+
+			"Splitting on one would turn its values into campaign names and drop it "+
+			"from the forecast. Add the campaign column to the export, or name a "+
+			"label column with -by NAME",
+			path, rowsPerDay, rowsPerDay, strings.Join(measured, ", "))
 	}
 	return "", fmt.Errorf("%s: there are %d rows per day but no column has exactly %d "+
 		"distinct values, so they cannot be told apart. Name the column with -by NAME",
