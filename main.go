@@ -85,7 +85,8 @@ forecast options:
   -columns A,B    which columns to forecast (default: every column of numbers)
   -entities A;B   which campaigns, separated by ; (default: all, plus the account
                   total). Semicolons, because campaign names contain commas.
-  -by NAME        the column that separates campaigns, if it cannot be worked out
+  -by NAME        the column that separates campaigns, if it cannot be worked out.
+                  A name, not a measurement: a column that is forecast is refused
   -future K=V,V   known-future values, e.g. -future budget=500,500,600
   -series NAME    name for this series (default: the file name)
   -out FILE       HTML report path (default: alongside the CSV)
@@ -225,7 +226,8 @@ func cmdForecast(args []string) error {
 	horizon := fs.Int("horizon", 7, "days ahead")
 	series := fs.String("series", "", "name for this series")
 	columns := fs.String("columns", "", "which columns to forecast (default: every column holding numbers)")
-	by := fs.String("by", "", "column that separates campaigns (default: worked out from the file)")
+	by := fs.String("by", "", "column that separates campaigns -- a name, not a "+
+		"measurement (default: worked out from the file)")
 	entities := fs.String("entities", "", "which campaigns to forecast, separated by ; (default: all, plus the account total)")
 	future := fs.String("future", "", "known-future values, e.g. budget=500,500,600")
 	history := fs.Int("history", 90, "days of past data to draw on the chart")

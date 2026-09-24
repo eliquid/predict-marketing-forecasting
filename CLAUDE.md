@@ -136,6 +136,12 @@ Columns are sorted into forecast / setting / rate / identifier / text by rule
 (`AGENTS.md` §4b), and the tool prints which rule it applied to each. When
 something is "missing" from a forecast, read that output before suspecting a bug.
 
+That classification is also what decides the **campaign column**: only a label
+qualifies — a text column, or a numeric one `looksLikeIdentifier` accepts
+(`Campaign ID`). A measured column is never chosen however well its value count
+fits, because splitting on `Cost` turns prices into campaign names and drops the
+metric from the forecast, which it once did silently (`AGENTS.md` §2a).
+
 ## Working style that has paid off here
 
 - **Prove it, don't assert it.** Every claim in this project's docs came from a
