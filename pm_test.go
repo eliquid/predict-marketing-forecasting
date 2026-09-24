@@ -911,3 +911,68 @@ func TestShareScriptExcludesTheAdapter(t *testing.T) {
 		t.Error("finetune.py must be shared so the recipient can train their own")
 	}
 }
+
+// Counting rows per day is not enough: a day that lists one campaign twice and
+// another not at all has the right number of rows. Before this was caught, the
+// duplicate was added to itself and the absent campaign was stored as a real
+// zero -- 1119 against a true 120, and a fabricated step in the other series.
+// The account total stayed right, which is why nothing looked wrong.
+func TestADuplicatedRowCannotHideAMissingCampaign(t *testing.T) {
+	build := func(mutate func(i int) []string) string {
+		var b strings.Builder
+		b.WriteString("Day,Campaign,Cost\n")
+		for i := 0; i < 120; i++ {
+			for _, line := range mutate(i) {
+				fmt.Fprintf(&b, "%s,%s\n", day(i), line)
+			}
+		}
+		return b.String()
+	}
+	both := func(int) []string { return []string{"Brand,120", "Shopping,500"} }
+
+	// The shape that used to pass silently.
+	dup := build(func(i int) []string {
+		if i == 60 {
+			return []string{"Brand,120", "Brand,999"}
+		}
+		return both(i)
+	})
+	_, err := readCSV(writeTemp(t, "dup.csv", dup), nil, "")
+	if err == nil {
+		t.Fatal("a day listing one campaign twice must be refused")
+	}
+	for _, want := range []string{day(60), "twice", "Brand"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error should name %q, got: %v", want, err)
+		}
+	}
+
+	// The same defect with three campaigns, where the duplicate hides a different
+	// one. A brand-new name on one day cannot arise on its own: it changes the
+	// file's distinct count and findGroupColumn refuses the file first.
+	var t3 strings.Builder
+	t3.WriteString("Day,Campaign,Cost\n")
+	for i := 0; i < 120; i++ {
+		rows := []string{"A,100", "B,200", "C,300"}
+		if i == 60 {
+			rows = []string{"A,100", "B,200", "B,900"} // C missing, B doubled
+		}
+		for _, r := range rows {
+			fmt.Fprintf(&t3, "%s,%s\n", day(i), r)
+		}
+	}
+	if _, err := readCSV(writeTemp(t, "three.csv", t3.String()), nil, ""); err == nil {
+		t.Error("a duplicate hiding a third campaign must be refused")
+	} else if !strings.Contains(err.Error(), "twice") {
+		t.Errorf("error should say a campaign appears twice, got: %v", err)
+	}
+
+	// And a consistent file must still be read.
+	d, err := readCSV(writeTemp(t, "ok.csv", build(both)), nil, "")
+	if err != nil {
+		t.Fatalf("a consistent file must still import: %v", err)
+	}
+	if got := d.Values["Brand"]["Cost"][60]; got != 120 {
+		t.Errorf("Brand on the middle day = %v, want 120", got)
+	}
+}

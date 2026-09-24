@@ -546,6 +546,19 @@ func readCSV(path string, want []string, groupBy string) (*Data, error) {
 			}
 		}
 	}
+	// Counting rows per day is not enough. A day that lists one campaign twice and
+	// another not at all has the right number of rows and goes straight through:
+	// the duplicate is added to itself, and the missing campaign is stored as a
+	// real zero it never reported. Measured on a two-campaign file, one such day
+	// stored 1119 against a true 120 for the campaign that appeared twice, and 0
+	// for the one that did not appear -- a fabricated step in exactly the series
+	// the row count exists to protect. The set has to be checked, not the size.
+	if groupCol >= 0 {
+		if err := sameCampaignsEveryDay(path, rows, groupCol, group); err != nil {
+			return nil, err
+		}
+	}
+
 	for i, rw := range rows {
 		di := dayIndex[rw.day]
 		entity := AccountEntity
@@ -837,6 +850,83 @@ func looksLikeSetting(name string) bool {
 		}
 	}
 	return false
+}
+
+// sameCampaignsEveryDay refuses a file where some day carries a different set of
+// campaigns from the first, or the same one twice.
+//
+// It reports the first day that differs, and says which names are wrong and how,
+// because "your export is inconsistent" sends someone scrolling through 16,000
+// rows. Rows are already sorted by day, so the first difference found is the
+// earliest one.
+func sameCampaignsEveryDay(path string, rows []row, groupCol int, group string) error {
+	name := func(rw row) string {
+		n := strings.TrimSpace(rw.raw[groupCol+1])
+		if n == "" {
+			n = "(unnamed)"
+		}
+		return n
+	}
+
+	// The first day sets the expectation. Duplicates in it are caught here too.
+	want := map[string]bool{}
+	day0 := rows[0].day
+	for _, rw := range rows {
+		if rw.day != day0 {
+			break
+		}
+		if want[name(rw)] {
+			return fmt.Errorf("%s: %s lists %s %q twice. Adding both into one day "+
+				"doubles it and hides whichever %s is missing. Re-export a clean range",
+				path, day0, group, name(rw), group)
+		}
+		want[name(rw)] = true
+	}
+
+	seen := map[string]bool{}
+	day := day0
+	check := func(d string) error {
+		if d == day0 {
+			return nil
+		}
+		var missing []string
+		for n := range want {
+			if !seen[n] {
+				missing = append(missing, n)
+			}
+		}
+		if len(missing) == 0 {
+			return nil
+		}
+		sort.Strings(missing)
+		return fmt.Errorf("%s: %s is missing %s %s, which %s has. Every day must "+
+			"carry the same %ss, or adding them up invents a jump in the totals. "+
+			"Re-export a complete date range",
+			path, day, group, listOr(missing, "none"), day0, group)
+	}
+
+	for _, rw := range rows {
+		if rw.day != day {
+			if err := check(day); err != nil {
+				return err
+			}
+			day, seen = rw.day, map[string]bool{}
+		}
+		n := name(rw)
+		if seen[n] {
+			return fmt.Errorf("%s: %s lists %s %q twice. Adding both into one day "+
+				"doubles it and hides whichever %s is missing. Re-export a clean range",
+				path, rw.day, group, n, group)
+		}
+		if !want[n] {
+			return fmt.Errorf("%s: %s has %s %q, which %s does not. Every day must "+
+				"carry the same %ss, or adding them up invents a jump in the totals. "+
+				"Re-export a complete date range",
+				path, rw.day, group, n, day0, group)
+		}
+		seen[n] = true
+	}
+	return check(day)
 }
 
 // campaignStates are the words an ad platform writes in its status column, and

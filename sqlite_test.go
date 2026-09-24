@@ -485,3 +485,82 @@ func TestHeadlineEntity(t *testing.T) {
 		}
 	}
 }
+
+// A stale view or index is invisible to staleTable -- a view has no columns of
+// its own to miss -- so a file carrying an old definition used to be adopted in
+// silence and keep it. A deliberately broken forecast_accuracy made `accuracy`
+// exit 0 reporting "no forecast day has an actual yet" on a database full of
+// scorable rows. The derived objects are compared on every open now.
+func TestStaleViewAndIndexAreRebuilt(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "stale.db")
+	db, err := openDB(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+
+	// Replace both with something the current code did not write, exactly as an
+	// older release would have left them.
+	raw, err := sql.Open("sqlite", "file:"+path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, stmt := range []string{
+		`DROP VIEW forecast_accuracy`,
+		`CREATE VIEW forecast_accuracy AS SELECT 'stale' AS series_id`,
+		`DROP INDEX forecasts_median`,
+		`CREATE INDEX forecasts_median ON forecasts (run_id)`,
+	} {
+		if _, err := raw.Exec(stmt); err != nil {
+			t.Fatalf("%s: %v", stmt, err)
+		}
+	}
+	raw.Close()
+
+	// Opening it again must put both back, without needing schemaVersion bumped.
+	db, err = openDB(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	for _, o := range derivedObjects {
+		var got string
+		if err := db.QueryRow(`SELECT sql FROM sqlite_master WHERE name=?`, o.name).Scan(&got); err != nil {
+			t.Fatalf("%s is missing after open: %v", o.name, err)
+		}
+		if strings.TrimSpace(got) != strings.TrimSpace(o.ddl) {
+			t.Errorf("%s was not rebuilt; file still has:\n%s", o.name, got)
+		}
+	}
+
+	// And the rebuilt view must actually be the accuracy view, not a stub.
+	var n int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('forecast_accuracy')
+	                       WHERE name IN ('trained_on','inside_range','actual')`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 3 {
+		t.Errorf("the rebuilt view has %d of its 3 key columns", n)
+	}
+}
+
+// Opening an unchanged database must stay a pure read: that is what lets a
+// read-only file still be queried, and refreshDerived runs on every open.
+func TestRefreshingDerivedObjectsWritesNothingWhenCurrent(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "ro.db")
+	db, err := openDB(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+
+	if err := os.Chmod(path, 0o444); err != nil {
+		t.Fatal(err)
+	}
+	db, err = openDB(path)
+	if err != nil {
+		t.Fatalf("a current, read-only database must still open: %v", err)
+	}
+	db.Close()
+}

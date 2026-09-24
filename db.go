@@ -43,7 +43,6 @@ CREATE TABLE IF NOT EXISTS raw (
     PRIMARY KEY (source, row_num)
 );
 
-CREATE INDEX IF NOT EXISTS raw_day ON raw (source, day);
 
 -- Forecast against what actually happened.
 --
@@ -61,42 +60,6 @@ CREATE INDEX IF NOT EXISTS raw_day ON raw (source, day);
 --
 -- Always filter trained_on = 0. A fine-tuned model has seen the days it was
 -- trained on, and scoring against them flatters it enormously.
-CREATE VIEW IF NOT EXISTS forecast_accuracy AS
-SELECT
-    r.series_id,
-    r.model,
-    r.as_of,
-    CAST(julianday(f.day) - julianday(r.as_of) AS INTEGER) AS days_ahead,
-    f.entity,
-    f.metric,
-    f.day,
-    f.value                                   AS forecast,
-    s.value                                   AS actual,
-    f.value - s.value                          AS error,
-    ABS(f.value - s.value)                     AS abs_error,
-    CASE WHEN s.value <> 0
-         THEN 100.0 * (f.value - s.value) / s.value END AS pct_error,
-    lo.value                                   AS low,
-    hi.value                                   AS high,
-    CASE WHEN s.value IS NOT NULL AND lo.value IS NOT NULL
-         THEN s.value BETWEEN lo.value AND hi.value END AS inside_range,
-    -- A fine-tuned model has already seen the days it was trained on. Scoring it
-    -- against them measures memorisation, not forecasting, and it would look
-    -- spectacular for the wrong reason. The worker declares trained_through in
-    -- its handshake, which is stored verbatim in model_info.
-    CASE WHEN json_extract(r.model_info, '$.trained_through') IS NOT NULL
-          AND f.day <= json_extract(r.model_info, '$.trained_through')
-         THEN 1 ELSE 0 END AS trained_on,
-    json_extract(r.model_info, '$.trained_through') AS trained_through
-FROM forecasts f
-JOIN runs    r  ON r.id = f.run_id
-LEFT JOIN series s  ON s.series_id = r.series_id AND s.entity = f.entity
-                   AND s.metric   = f.metric     AND s.day    = f.day
-LEFT JOIN forecasts lo ON lo.run_id = f.run_id AND lo.entity = f.entity
-                      AND lo.metric = f.metric AND lo.day = f.day AND lo.quantile = 0.1
-LEFT JOIN forecasts hi ON hi.run_id = f.run_id AND hi.entity = f.entity
-                      AND hi.metric = f.metric AND hi.day = f.day AND hi.quantile = 0.9
-WHERE f.quantile = 0.5;
 
 -- One row per number per day. "metric" is the target's column name, or a
 -- covariate's, so a forecast that used a covariate has that covariate stored
@@ -145,9 +108,114 @@ CREATE TABLE IF NOT EXISTS forecasts (
 -- 1.6s scanning, 12ms searching this index, and the filter-validation query in
 -- cmdAccuracy went from 1.16s to 1ms. Partial, so it holds one row per
 -- (run, entity, metric, day) rather than one per quantile.
-CREATE INDEX IF NOT EXISTS forecasts_median
-    ON forecasts (entity, run_id, metric, day) WHERE quantile = 0.5;
 `
+
+// derivedObjects are the view and the indexes: everything in the file that holds
+// no data of its own and can be rebuilt from the tables at any time.
+//
+// They are kept apart from `schema` because `CREATE ... IF NOT EXISTS` is not a
+// migration for them either, and unlike a table there is nothing for staleTable
+// to inspect -- a view has no columns of its own to miss. A file carrying an old
+// definition was therefore adopted in silence and kept it: a stale
+// forecast_accuracy made `accuracy` exit 0 reporting "no forecast day has an
+// actual yet" on a database holding 350 scorable rows.
+//
+// So these are compared against the file on every open and rebuilt when they
+// differ. Rebuilding costs nothing -- the view is a query, the indexes are
+// derivable -- and the comparison is a pure read, which is what keeps opening an
+// unchanged database free of writes and still possible on read-only media.
+var derivedObjects = []struct{ name, ddl string }{
+	{"raw_day", `CREATE INDEX raw_day ON raw (source, day)`},
+
+	// Forecast against what actually happened.
+	//
+	// A view rather than a table: every number in it already exists in forecasts
+	// and series, so materialising it would be a second copy that can disagree
+	// with the first.
+	{"forecast_accuracy", `CREATE VIEW forecast_accuracy AS
+SELECT
+    r.series_id,
+    r.model,
+    r.as_of,
+    CAST(julianday(f.day) - julianday(r.as_of) AS INTEGER) AS days_ahead,
+    f.entity,
+    f.metric,
+    f.day,
+    f.value                                   AS forecast,
+    s.value                                   AS actual,
+    f.value - s.value                          AS error,
+    ABS(f.value - s.value)                     AS abs_error,
+    CASE WHEN s.value <> 0
+         THEN 100.0 * (f.value - s.value) / s.value END AS pct_error,
+    lo.value                                   AS low,
+    hi.value                                   AS high,
+    CASE WHEN s.value IS NOT NULL AND lo.value IS NOT NULL
+         THEN s.value BETWEEN lo.value AND hi.value END AS inside_range,
+    -- A fine-tuned model has already seen the days it was trained on. Scoring it
+    -- against them measures memorisation, not forecasting, and it would look
+    -- spectacular for the wrong reason. The worker declares trained_through in
+    -- its handshake, which is stored verbatim in model_info.
+    CASE WHEN json_extract(r.model_info, '$.trained_through') IS NOT NULL
+          AND f.day <= json_extract(r.model_info, '$.trained_through')
+         THEN 1 ELSE 0 END AS trained_on,
+    json_extract(r.model_info, '$.trained_through') AS trained_through
+FROM forecasts f
+JOIN runs    r  ON r.id = f.run_id
+LEFT JOIN series s  ON s.series_id = r.series_id AND s.entity = f.entity
+                   AND s.metric   = f.metric     AND s.day    = f.day
+LEFT JOIN forecasts lo ON lo.run_id = f.run_id AND lo.entity = f.entity
+                      AND lo.metric = f.metric AND lo.day = f.day AND lo.quantile = 0.1
+LEFT JOIN forecasts hi ON hi.run_id = f.run_id AND hi.entity = f.entity
+                      AND hi.metric = f.metric AND hi.day = f.day AND hi.quantile = 0.9
+WHERE f.quantile = 0.5`},
+
+	// quantile is the last column of the forecasts primary key, so a query that
+	// constrains only quantile -- which is every query through forecast_accuracy,
+	// because the view ends "WHERE f.quantile = 0.5" -- cannot search that index
+	// and scans the whole table instead. Measured on a 2.3M-row file: the
+	// accuracy query took 1.6s scanning, 12ms searching this index, and the
+	// filter-validation query in cmdAccuracy went from 1.16s to 1ms. Partial, so
+	// it holds one row per (run, entity, metric, day) rather than one per
+	// quantile.
+	{"forecasts_median", `CREATE INDEX forecasts_median
+    ON forecasts (entity, run_id, metric, day) WHERE quantile = 0.5`},
+}
+
+// refreshDerived rebuilds any view or index whose definition in the file is not
+// the one this binary expects. SQLite stores the CREATE statement verbatim, so
+// comparing text is exact.
+func refreshDerived(db *sql.DB) error {
+	for _, o := range derivedObjects {
+		var have, kind string
+		err := db.QueryRow(`SELECT type, sql FROM sqlite_master WHERE name = ?`,
+			o.name).Scan(&kind, &have)
+		switch {
+		case err == sql.ErrNoRows:
+			kind = "" // absent: create it below
+		case err != nil:
+			return fmt.Errorf("reading the definition of %s: %w", o.name, err)
+		case strings.TrimSpace(have) == strings.TrimSpace(o.ddl):
+			continue // already what we want, and nothing is written
+		}
+		drop := "DROP INDEX IF EXISTS "
+		if strings.HasPrefix(o.ddl, "CREATE VIEW") {
+			drop = "DROP VIEW IF EXISTS "
+		}
+		if kind != "" {
+			if _, err := db.Exec(drop + o.name); err != nil {
+				return fmt.Errorf("replacing %s: %w", o.name, err)
+			}
+		}
+		// Another process opening the same file at the same moment may have got
+		// there first. Whoever won created the definition this binary wants --
+		// they are running the same code -- so losing the race is success, the
+		// same way it is for journal_mode above.
+		if _, err := db.Exec(o.ddl); err != nil && !strings.Contains(err.Error(), "already exists") {
+			return fmt.Errorf("creating %s: %w", o.name, err)
+		}
+	}
+	return nil
+}
 
 // schemaVersion is stamped into the file with PRAGMA user_version. Bump it when
 // a table changes shape, and teach staleTable how to recognise the new one.
@@ -231,6 +299,15 @@ func openDB(path string) (*sql.DB, error) {
 			db.Close()
 			return nil, fmt.Errorf("stamping schema version on %s: %w", path, err)
 		}
+	}
+
+	// The view and the indexes are checked on every open, current file or not:
+	// they are the part `schemaVersion` cannot speak for, because a stale one is
+	// invisible to staleTable and answers queries wrongly rather than failing.
+	// Unchanged, this writes nothing.
+	if err := refreshDerived(db); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("opening database %s: %w", path, err)
 	}
 
 	// The file holds the account's whole spend history, and the default umask
