@@ -34,6 +34,8 @@ tar cf - \
 	--exclude='predictmarketing' \
 	--exclude='*.db' --exclude='*.db-wal' --exclude='*.db-shm' \
 	--exclude='*_forecast*.html' \
+	--exclude='./data' \
+	--exclude='.git' \
 	--exclude='.install-check*' \
 	. | (cd "$dest" && tar xf -)
 

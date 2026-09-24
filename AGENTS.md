@@ -84,6 +84,15 @@ when given.
 | Reports go to `data/reports/`, never beside the export | `reportPath` — `data/` is meant to show at a glance what is still unread |
 | Train `chronos2ft`, then report 2 with all three | `trainFinetune`, then `writeComparison` again |
 
+**The table is one file's job, and `cmdImport` stops at the first file that
+fails.** `pendingFiles` sorts the folder's CSVs by name and calls `importOne` in
+that order; the first error returns, so every file after it in the alphabet is left
+untouched and unmentioned. Three files where the second is too short prints the
+first file's full import, then the refusal, and nothing at all about the third —
+which was fine and is still sitting in `data/`. The state afterwards is exactly the
+prefix that succeeded. Re-running after moving the bad file out picks up where it
+stopped, because a filed-away CSV is no longer pending.
+
 **`chronos2ft` is retrained on every import**, on the newest data, which costs
 a real stretch of CPU each time -- minutes rather than seconds. `--steps` sets
 how many steps run, but **the cost per step is not constant**, so the file does
@@ -117,6 +126,33 @@ first, which takes as long as it takes. Report 1 is written and the CSV filed aw
 *before* training starts, so a fine-tune that fails leaves a completed import
 and a readable report rather than nothing.
 
+**Where an interrupted import leaves things.** The order in `importOne` is the
+recovery map, because each step is the only thing that records itself:
+
+| Stopped | `data/` | `runs` | `series` / `raw` | Reports |
+|---|---|---|---|---|
+| reading the CSV, or the history gate | CSV still there | — | — | — |
+| a model, part way | CSV still there | nothing for that model | already written | — |
+| between the two models | CSV still there | one row | already written | — |
+| the fine-tune | CSV in `imported/` | two rows | written | report 1 only |
+
+A `runs` row appears only once a model has finished every entity, so a model killed
+half way leaves nothing behind. `series` and `raw` are written *before* any model
+runs, so **history in the database is never evidence that a forecast happened** — a
+Ctrl-C during the first model still leaves the whole export stored. Re-running
+`import` on a CSV still in `data/` is safe and is the intended recovery: `series`
+upserts and `raw` is replaced per source (§4a), so only an extra `runs` row
+survives, which `report` ignores and `accuracy` counts twice.
+
+Once the CSV has moved to `imported/` the job cannot be re-run that way without
+re-forecasting both pretrained models and filing a second copy of the same export.
+The `finish-an-import` skill has the steps that finish it in place.
+
+**A failed fine-tune exits 0.** `importOne` returns `nil` on every fine-tune failure
+path, so a cron job or script sees success and one report. The only reliable check
+is whether `data/reports/<name>_with-finetune.html` exists — and a stale one from an
+earlier import is never cleaned up, so check its timestamp too.
+
 **The comparison report** (`compare.go`, `compare_template.go`) is separate from
 the single-model report in `report.go`, because it answers a different question:
 not "what does this model say" but "do the models agree". Every model's median is
@@ -142,12 +178,55 @@ coordinate, which is how the crosshair finds the day without re-deriving the
 projection in JavaScript. `drawCompareChart` returns the drawing **and** the
 series as JSON for exactly that reason.
 
+One caveat, because it decides what you are allowed to change: the crosshair does
+**not** in fact depend on the width being fixed. `fromEvent` divides the pointer
+offset by `svg.viewBox.baseVal.width / rect.width`, so it already survives any
+uniform scaling, and the markers and the rule are positioned in user units and
+scale with it. Forcing `width:100%` on a real report — scale factor 5.25 — left the
+crosshair reading the correct day and the correct values. What the fixed width buys
+is **legibility**: 150 history days at 9px plus 7 forecast days at 46px need
+1789px, and squeezed into a 341px column the whole forecast is 60px wide with every
+line, marker and label on top of the others. So do not scale it — but if something
+does scale (a print stylesheet, a container query, a phone), the crosshair maths is
+not what breaks, and rewriting it is wasted work.
+
+**The crosshair and the table below it do not share a formatter.** The stat cards
+and the table are rendered in Go by `formatMetric`, which chooses precision from
+magnitude and puts the `%` back on a rate. The readout is rendered in the browser
+by `money()`, which adds thousands separators, uses `toFixed(2)`/`toPrecision(3)`,
+and knows nothing about percent — the JSON carries `xs`, `days`, `actual`, `cut`,
+the y projection and the raw values, and no percent flag at all. So one day of one
+model reads `22,855` in the readout and `22855.04` in the table directly underneath,
+and a rate reads `4.2` above and `4.200%` below. Changing how numbers print means
+changing **both**, and giving the readout its `%` back means adding the flag to the
+JSON first.
+
 Each series is drawn inside `<g class="series" data-model="...">`, and the end
 labels inside `<g class="series-label" data-model="...">`, so the legend hides a
 line, its markers and its label with one selector and no knowledge of the
 drawing. The **readout sits above the chart, outside the scroller**: the first
 version put it inside, where it scrolled away with the content and showed
 nothing, while a synthetic mousemove in a test found it perfectly.
+
+**Only the pane visible when the page loads opens on the forecast.** The
+scroll-to-the-right happens once, in a `requestAnimationFrame` at the end of the
+per-pane setup loop. By the time it runs, `refreshMetrics()` has hidden every other
+pane, and a `display:none` element reports `scrollWidth === 0`, so the assignment is
+a no-op for all of them; `show()` never re-scrolls. Every pane reached through the
+dropdowns therefore opens at the **oldest** day with the forecast off-screen to the
+right. Measured on a real 15-pane report: the pane visible at load sat at
+`scrollLeft` 643 of a maximum 643; switching the metric dropdown revealed a pane at
+0 of the same 643. If you fix it, the fix belongs in `show()`, not in the
+`requestAnimationFrame`.
+
+`spreadLabels` separates the end labels **from each other only**. They share the
+right-hand margin with the y-axis tick labels and nothing deconflicts the two: a
+tick is drawn at `w-padR+12` and an end label at `xs[n-1]+8`, four pixels apart,
+both anchored at the start. Whenever a model's last forecast value lands within
+about a line-height of one of the five grid values, its name prints on top of that
+number and both become unreadable — 5 of 15 panes on a real report. It is a function
+of the data, so it will not reproduce on a test fixture. If you touch either label,
+check several panes, not one.
 
 `-history 0` (the import default) draws every day there is. Scrolling back is
 only useful if there is something behind you.
@@ -185,8 +264,71 @@ invent a disagreement that is really a difference in what each model was shown.
 A dataset whose only runs are pretrained gets report 1 alone; the second report
 appears when a run declares `trained_through` (§4c).
 
+**`runs` cannot show you which runs those are.** Its `WHEN` column is
+`created_at` — when the command was typed — and `as_of`, the last day of real
+data the run was given, is not printed at all. The two come apart the moment you
+backtest or re-forecast an older export. So after a single `forecast` on a newer
+file, `report` will silently draw a **one-model** comparison page (it names the
+models it used on the line it prints) until every model has been run at the same
+`as_of`. `import` never hits this because it runs all three together. To see what
+`report` will pick:
+
+```sql
+SELECT substr(id,1,12), series_id, model, as_of, horizon, created_at
+FROM runs ORDER BY as_of DESC, created_at DESC;
+```
+
+**Mixed horizons under one `as_of` produce a page that overstates one model.**
+Nothing refuses them: a 7-day `import` plus a 14-day `forecast` on the same
+series draws an axis out to the 14th day with the 7-day model still on it. Give
+every model the same `-horizon`, or the comparison is not one.
+
 The file names are `reportPath`'s, the same ones `import` writes, so `report`
 replaces the pages in place rather than leaving a second set beside them.
+
+**`report` redraws the comparison pages only.** `rerenderSeries` calls
+`writeComparison`; nothing in `rerender.go` calls `writeReport`. The single-model
+page — `report.go`, `template.go`, its SVG, its q10/q50/q90 table, its provenance
+block — is written from exactly one place, `cmdForecast`, and is produced by neither
+`import` nor `report`. So **if you change `report.go`, `template.go` or `format.go`,
+running `report` proves nothing**: it will happily rewrite `data/reports/*.html`
+with none of your change in them. Re-run `forecast` instead, and give it a scratch
+database — `forecast` calls `saveRun` before `writeReport`, so every look at a
+drawing change stores another run, and those runs are all scored later against the
+same actuals:
+
+```bash
+./predictmarketing forecast examples/05-campaigns.csv -model chronos2 \
+  -db /tmp/scratch.db -out /tmp/r.html
+```
+
+`report` is read-only precisely so that iterating on the *comparison* drawing is
+free; the single-model report has no such path, and `-db` is what keeps it out of
+the real history.
+
+### How numbers are printed (`format.go`)
+
+Precision is chosen **per value from its magnitude**, never per column:
+
+| `abs(v)` | rendered |
+|---|---|
+| exactly 0 | `0` — this also normalises the `-0.00` the models return |
+| `>= 1e15` or `< 1e-4` | `%g` to 6 significant figures, i.e. scientific |
+| `< 1` | 6 decimal places |
+| `< 100` | 3 decimal places |
+| otherwise | 2 decimal places |
+
+Two consequences that look like bugs and are not. **The decimal count changes row
+to row inside one column** — a `Clicks` column crossing 100 prints `99.885` then
+`107.63`; `tabular-nums` aligns glyph widths but cannot align differing digit
+counts. And **`compact()`, which draws the y-axis, rounds to integers below 1,000
+and is shared with the comparison page**: any metric whose whole range sits under 1
+gets an axis of five `0`s. Measured on a generated rate file: a conversion rate
+around 0.031 drew the labels `0 0 0 0 0` while the table beside it read `0.031097`;
+a CTR around 4.5 drew `4 5 5 5 5`. The curve and the table are right; the axis is
+the part saying nothing. `compact()` also never carries the `%`, so a rate's axis
+and its table are in different units on the same screen. Fixing it changes both
+pages.
 
 **One thing is not recoverable: the `%` sign.** `series` stores the number a rate
 was parsed to, not that it was written as a percentage, so `data.Percent` is empty
@@ -195,19 +337,55 @@ sign is missing. Re-importing the export restores it. Do not fix this by guessin
 from the column name — the classification rule (§4b) decides what a rate *is*, and
 whether the file wrote a sign is a separate fact that would have to be stored.
 
+**A second thing is not recoverable, and it is worse: why an entity is absent.**
+`import` gets its "switched off in the export" list from the export's status column.
+`rebuildData` has no export — it derives the list by set difference between the
+entities in `series` and the entities the runs forecast. Those are not the same
+question. A campaign that was simply dropped from a later export, or renamed, is
+labelled `switched off in the export` on the redrawn page, and told its history is
+"still counted in the account total", which is also false on that path. Reproduced
+by importing Alpha/Beta/Gamma then Alpha/Beta and redrawing. The page is right
+whenever the runs and the `series` rows come from one import; it is wrong the moment
+they do not. If the exclusion note matters to you, re-import rather than redraw.
+
 `forecast` flags:
 
 | | |
 |---|---|
 | `-model` | `chronos2` (default), `timesfm3` or `chronos2ft` |
 | `-horizon N` | days ahead, default 7 |
-| `-history N` | days of past data drawn on the chart, default 90 |
+| `-history N` | days of past data drawn on the chart, default 90. **`0` here means 90, not "all"** — `drawChart` clamps anything `<= 0` back to the default, unlike `import` and `report` where `0` means every day. To draw the whole history from `forecast`, pass a number larger than the file (`-history 100000`). |
 | `-columns A,B` | which columns to forecast (commas) |
 | `-entities A;B` | which campaigns (**semicolons** — campaign names contain commas) |
 | `-by NAME` | column separating campaigns, if it cannot be worked out |
 | `-future K=v,v` | known-future values for a column |
 | `-series NAME` | dataset name, default the file name |
 | `-db` / `-out` | database and report paths |
+
+**`-future` is one set of values, sent to every entity.** The past history of a
+covariate is read per campaign (`data.Values[entity]`), but the future you type is
+a single map handed unchanged to every request — the account and each campaign.
+On a campaign export the default `-entities` is *all of them plus the account*, so
+
+    forecast "Campaign report.csv" -future "Budget=900,900,900,900,900,900,900"
+
+tells a campaign whose budget has been 40/day for its whole history that its next
+seven days are 900. Nothing says so: the summary prints one line,
+`using known-future: Budget`, with no per-entity qualification, and the forecast
+completes normally. Measured on `examples/05-campaigns.csv`, where `Brand Search`
+has a flat `Budget` of 40.00 and accepted `-future "Budget=5000,5000"` without
+comment.
+
+Pair `-future` with `-entities` so the number you know belongs to the thing you
+are forecasting. There is no way to give a different future per campaign in one
+run: forecast them one at a time, or leave `-future` off.
+
+**`-columns` narrows the model call only.** Every numeric column is still read,
+still aggregated and still written to `series` and `raw`; `-columns` picks which
+of them are sent to the model. Omitted metrics keep supplying actuals for later
+scoring, and they are named in no line of the summary — so a column missing from
+`forecasting:` does **not** always mean the classification rule (§4b) dropped it.
+Check what you passed before reading it as a bug.
 
 `import` flags:
 
@@ -265,6 +443,27 @@ On a 16,485-row export this produced a file that imported cleanly: 1,099 days,
 15 campaigns, names containing commas intact, because those arrive quoted and
 the quoting survives. A campaign name containing a **tab** would break it.
 
+**The numbers have to be written the English way.** `parseCell` strips `$ £ €`,
+spaces and commas and hands what is left to `ParseFloat`, so a file written in
+another locale is read without complaint and read wrongly. Measured on 40-row
+files built for this:
+
+| Written | Stored | |
+|---|---|---|
+| `1.200,50` (de/es/it/nl) | `1.2005` | no error, 1,000x too small |
+| `1 200,50` (fr) | `120050` | no error, 100x too large |
+| `¥100` | — | the column becomes text and is never forecast (§4b) |
+
+The first two are the worst thing that can happen to a file here: the column is
+numeric, every row parses, nothing is printed, and the forecast is confidently
+wrong. Nothing downstream can tell afterwards. The third is the opposite — quiet
+on screen, loud in the database, where the column is simply missing from
+`series`. Only `$`, `£` and `€` are stripped; any other currency symbol takes its
+column out.
+
+Re-download with the account set to a locale that writes `1200.50`, or convert
+the separators before importing.
+
 ## 2a. How a campaign export is read
 
 Real exports (Google Ads) carry **one row per campaign per day**: 15 campaigns
@@ -286,6 +485,36 @@ over 262 days arrives as 3,930 rows. That shape drives most of the design.
 The account and the campaigns are forecast **independently**, so their totals
 will not match exactly. On the real file they agree to within 1–4%, which is a
 useful sanity check rather than a guarantee.
+
+**The uneven-rows guard counts rows, not campaigns.** It checks that every day
+carries the same *number* of rows, never the same *set* of them, so a day that
+lists one campaign twice and another not at all goes straight through. Measured
+on a two-campaign file where one day carried two `Brand` rows and no `Shopping`
+row: `Brand` absorbed both (1119 against a true 120) and `Shopping` was stored as
+a real 0 for that day. Only the per-campaign split is wrong — and the fabricated
+zero is exactly the step in a series the guard exists to prevent. Nothing is
+printed.
+
+If a campaign series shows an unexplained zero day, count that day's distinct
+campaigns in the export before looking for a fault in the model.
+
+**A campaign renamed or replaced part-way through the export cannot be imported
+at all.** `findGroupColumn` counts a column's distinct values over the *whole
+file* and requires that count to equal the rows per day, so a file with two rows
+every day but three campaign names in it is refused:
+
+    there are 2 rows per day but no column has exactly 2 distinct values, so they
+    cannot be told apart. Name the column with -by NAME
+
+Naming it does not help. `-by "Campaign"` on the same file answers
+
+    -by "Campaign" has 3 distinct values but there are 2 rows per day, so it does
+    not separate them
+
+Both were measured. No flag imports such a file; the fix is in the export — split
+it at the rename, or re-export a range over which the campaign set is constant.
+The message's advice is honest for the commoner cause (a column the tool could
+not pick between) and a dead end for this one.
 
 ## 2a1. Everything is stored; only switched-on campaigns are forecast
 
@@ -321,11 +550,57 @@ is believed only when every value in it is a word in `campaignStates`
 (`ingest.go`) / `CAMPAIGN_STATES` (`models/finetune.py`) — **these two lists must stay
 in step.** No such column, and the tool falls back to the never-moved rule alone.
 
+**The exact-match rule stops protecting you once the account is small.** Requiring
+a column's distinct values to equal the rows per day is what normally keeps
+`findGroupColumn` off the status column — but a two-campaign export with one
+enabled and one paused gives `Campaign status` exactly two distinct values too.
+Measured on a 40-day, two-campaign file:
+
+    2 rows per day, and several columns could separate them (Campaign status,
+    Campaign). Choose one with -by NAME
+
+Three campaigns in three different states do the same. Unlike a campaign set that
+changes over time (§2a), this is always recoverable: `-by "Campaign"` is the
+answer. Pass `-by` by habit on any account small enough for the two counts to meet.
+
+**The fallback is silent, and the only tell is the wording of one line.** A single
+value anywhere in the column that is not a word in `campaignStates` disqualifies
+it for the entire file. Nothing announces that; the tool drops back to the
+never-moved rule, and a paused campaign whose history is not flat gets forecast
+after all. What distinguishes the two states is which exclusion line is printed:
+
+| Line | Means |
+|---|---|
+| `switched off in the export, stored but not forecast:` | the status column was found and used |
+| `no activity at all, stored but not forecast:` | it was not; only the never-moved rule applied |
+
+Measured on two 3-campaign, 120-row files identical but for one cell (`Pending`
+instead of `Enabled` on a single row), which flipped the output from the first
+line to the second. To check a file before importing it — adjusting the field
+number to wherever the status column sits:
+
+    awk -F, 'NR>1{print $2}' "Campaign report.csv" | sort -u
+
+Every word that comes back has to be in `campaignStates`. If one is a real
+platform state, add it there and to `CAMPAIGN_STATES` in `models/finetune.py` in
+the same change.
+
 **The dropdowns follow automatically.** The report's campaign dropdown is built
 from `sharedEntities(runs)` — the entities every model actually forecast — not
 from a query over `series`. Paused campaigns are in the database but not in the
 dropdown, which is the intended behaviour: you can only pick something there is a
 forecast for.
+
+**The account is forecast as its own series, so the report's total row does not
+equal the campaign rows above it.** The single-model report's summary table draws
+each campaign's next-horizon median total and then `(account)` as a `tr.total` with
+a rule above it — which reads exactly like a column sum and is not one. `(account)`
+is a separate entity with its own history, sent to the model as its own series.
+Nothing reconciles the two, and nothing should: the model is free to be more
+confident about a smooth aggregate than about its parts. Measured on
+`examples/05-campaigns.csv` at horizon 7 with `chronos2`: campaign rows summed to
+1922.06 for Cost against an `(account)` row of 1933.59. The excluded campaign is not
+the cause — it is all-zero across every row.
 
 Verified on the real 1,099-day, 15-campaign export: 6 campaigns plus `(account)`
 forecast; 9 stored and named as switched off.
@@ -383,7 +658,7 @@ models/
 examples/
   01-simple.csv  02-marketing.csv  03-platform-export.csv  04-with-budget.csv
   05-campaigns.csv     several campaigns per day: the per-campaign + account case
-  walkthrough.sh       every normal use, run for real
+  walkthrough.sh       the single-file commands, run for real (not import/report/accuracy)
   ground-truth.py      proves stored numbers are the library's, unaltered
 testdata/        fixtures, including deliberately broken workers
 dist/            prebuilt binaries for people without Go: built by build-dist.sh
@@ -423,7 +698,7 @@ forecast every metric in one call.
 
 **Error.** `{"id":"1","error":"..."}`
 
-Three rules on this seam:
+Four rules on this seam:
 
 1. **stdout belongs to the protocol.** Workers take the real stdout and redirect
    `sys.stdout` to stderr, because a progress bar printed by a library would
@@ -434,6 +709,33 @@ Three rules on this seam:
    suffix on every worker.
 3. **Capability mismatch fails loudly.** Sending covariates to a model that
    declares `covariates: false` is an error, never a silent drop.
+4. **The handshake's `quantiles` must be ascending, and the reply must use that
+   same order.** Nothing verifies it. `checkForecast` sorts every day's values
+   ascending as its repair for crossing, and `saveRun` then labels position *j*
+   with `quantiles[j]` — so a worker that declares `[0.5,0.1,0.9]`, or returns
+   its columns in a different order from the one it declared, has its median
+   stored as the 10th percentile with no error anywhere. Chronos-2 will not save
+   you: it honours `quantile_levels` in whatever order it is asked, including
+   `[0.9,0.1,0.5]` (measured). Whether this is caught depends only on how wide
+   the interval is — a wide one trips `absurdCrossing` and is refused with a
+   message about the *forecast* being out of order, which sends you looking in
+   the wrong place; a narrow one is silently sorted and reported as an ordinary
+   ~0.1% crossing. Measured: a worker declaring `[0.1,0.2,0.9]` and answering
+   `[101,100,900]` was accepted and stored as `q0.10=100 q0.20=101`. §5's
+   "quantiles ascending" is about the model's output values; this is about the
+   declared levels, which is a different fact. Declare them ascending, return
+   them ascending.
+
+**The `quantiles` line is not advisory, and the three models treat it
+differently.** Go always sends back exactly what the handshake declared, so this
+never shows up in normal use — but it decides what is possible if you ever want a
+different grid. `models/timesfm3_worker.py` compares the request against its own list and
+refuses anything else outright, because TimesFM 3.0 returns a fixed nine.
+`models/chronos2_worker.py` and `models/chronos2ft_worker.py` pass the list straight through as
+Chronos-2's `quantile_levels` and return whatever you ask for — including levels
+the handshake never mentioned, duplicates, and levels out of order (all measured).
+A change to the quantile grid is therefore a two-model change that will appear to
+work on Chronos and fail on TimesFM.
 
 ### Adding a model
 
@@ -455,6 +757,38 @@ that is the actual test in the review checklist.
 
 `raw` is replaced per source on re-import, so correcting an export does not leave
 stale rows. Everything else is append-only except `series`, which updates in place.
+
+**"Updates in place" means the cells the new file covers, and only those.**
+`saveRaw` deletes the whole source before inserting; `saveData` is an upsert with
+no delete. So after a re-import that *narrows* the export — fewer days, fewer
+campaigns, a different number of rows per day — `raw` is exactly the newest file
+and `series` is the union of every import ever done under that name. No CLI path
+removes a row from `series`; `DELETE FROM raw` is the only delete in the program.
+
+This is not cosmetic. `forecast_accuracy` joins forecasts to `series`, never to
+`raw`, so disowned rows keep being scored as though they were actuals and nothing
+marks them. Measured on a deliberately narrowed re-import: seven days scored
+against actuals present in no raw row. Detect it —
+
+    SELECT s.series_id, s.entity, COUNT(DISTINCT s.day) AS orphan_days,
+           MIN(s.day), MAX(s.day)
+    FROM series s
+    WHERE NOT EXISTS (SELECT 1 FROM raw r
+                      WHERE r.source = s.series_id AND r.day = s.day)
+    GROUP BY 1, 2;
+
+— then delete that series and re-import the corrected CSV under the same name.
+Nothing references `series`, so runs and forecasts survive untouched:
+
+    sqlite3 pm.db "DELETE FROM series WHERE series_id='<name>'"
+
+`reimport_test.go` covers the *same-shape* correction, where the upsert really
+does fix everything. A narrowing one is a different case and is not covered.
+
+**Nothing deduplicates a run.** `input_sha256` is written and never read, so the
+same `forecast` command run twice stores two runs and `accuracy` counts both:
+measured, `days` went 7 → 14 → 21 over three identical invocations, with every
+percentage unchanged. See the `days` note below before comparing models.
 
 **Every campaign is in `raw` and `series`, including paused ones** (§2a1). The
 filter is on what gets *modelled*, never on what gets stored.
@@ -493,6 +827,28 @@ ever shows `SCAN forecasts` for a view query again, this index stopped applying 
 `busy_timeout` and `foreign_keys` are per-connection, so they are set in the DSN,
 where the driver applies them to every connection rather than only the first.
 
+**WAL and read-only media are two different things.** A database file that is
+read-only in a *writable directory* opens and queries fine — that is what
+`TestReadOnlyDatabaseCanBeQueried` pins, and why `user_version` is stamped only
+when the schema is actually written. A database on genuinely read-only media — a
+read-only directory, a mounted snapshot, a share you were handed — cannot be
+opened at all, because SQLite must create the `-shm` file before it can read a WAL
+database. The failure is reported against the *first* statement, so it reads like
+a corrupt file rather than a permissions problem:
+
+    error: reading schema version of /path/pm.db: attempt to write a readonly database (1544)
+
+Repair: put the file back in `journal_mode=DELETE` **while it is still on writable
+storage**, then move it. A DELETE-journal database needs no sidecar and opens
+read-only with no change to this program.
+
+    sqlite3 pm.db 'PRAGMA journal_mode=DELETE'
+
+`openDB` switches it back to WAL the first time it is opened somewhere writable,
+so this is a property of the copy, not of the database. The existing test cannot
+catch this: it chmods the file only, and `t.Skipf`s with the words "WAL cannot be
+read-only" — which is the whole fact, living in a skip message.
+
 **`CREATE TABLE IF NOT EXISTS` is not a migration.** On a file that already has
 the table it ignores the new definition completely, without error. That is not
 theoretical: this repo's own `pm.db` predated per-entity storage, every statement
@@ -503,6 +859,28 @@ refuses one it cannot read with an explanation and a way out. `user_version` is
 stamped only when the schema is actually written, which is what keeps opening an
 up-to-date file a pure read. Bump `schemaVersion` and teach `staleTable` (via
 `requiredColumns`) the new columns whenever a table changes shape.
+
+**The same trap applies to `forecast_accuracy` and `forecasts_median`, and there
+the escape hatch does not exist.** `CREATE VIEW IF NOT EXISTS` and
+`CREATE INDEX IF NOT EXISTS` also ignore the new definition on a file that already
+has the object. For a *table* change, bumping `schemaVersion` and teaching
+`staleTable` a new column makes the old file be refused with an explanation. A
+view or an index has no columns for `staleTable` to inspect — it looks only at
+`series`, `forecasts`, `runs` and `raw` — so an old file is adopted silently and
+keeps the old definition. A file already stamped at the current `schemaVersion`
+never has the DDL run over it at all.
+
+Reproduced: with a deliberately stale view in place, `accuracy` **exited 0**
+printing `no forecast day has an actual yet` and `0 forecast days are still
+waiting` on a database holding 350 scorable rows. That is this schema's one
+documented failure mode, applied to the two objects the paragraph above does not
+cover, and it is worse there because there is nothing to teach `staleTable`.
+
+**If you change the view or the index, drop it explicitly.** Bumping
+`schemaVersion` alone does nothing. Put `DROP VIEW IF EXISTS` / `DROP INDEX IF
+EXISTS` ahead of the `CREATE`, or the change reaches only new databases — which
+is exactly where `sqlite_test.go` looks, so the regression is invisible to the
+suite as well.
 
 **Forecasts are kept so they can be scored later.** Each run records `as_of` — the
 last day of real data it was based on, which is not always the day it was run.
@@ -518,6 +896,35 @@ predictmarketing accuracy -db pm.db                  # all metrics, account leve
 predictmarketing accuracy -metric Cost -by-day       # how it decays with horizon
 predictmarketing accuracy -entity "Brand"            # one campaign
 ```
+
+**Read the `days` column first — it is a sample size, not a date range.** It is
+`COUNT(*)` over scored forecast rows, and nothing deduplicates by run. Two runs of
+the same model at the same `as_of` contribute their rows twice: measured, a second
+identical `forecast` run took one model's `days` from 7 to 14 while the other
+stayed at 7 and every percentage was unchanged. The two were then being compared
+on unequal samples with nothing on screen saying so. `runs` is where the
+duplication is visible; `accuracy` will never mention it.
+
+**`in range` means nothing until `days` is large.** It is `AVG(inside_range)*100`
+over those same rows, so one backtest of a 7-day horizon gives seven observations,
+and `-by-day` divides them into seven rows of **one**. Every `-by-day` cell then
+prints 0% or 100%, which reads like a finding and is a single coin flip. The
+"should sit near 80%" guidance needs several backtests behind it; below roughly
+ten observations per row, read `avg error` and ignore `in range`.
+
+**The filters are matched case-insensitively and then queried case-sensitively.**
+`known()` accepts a name by `strings.EqualFold`, but the value is bound into
+`WHERE entity=?`, which SQLite compares byte for byte. So `-entity "brand search"`
+passes the guard and then matches nothing, producing the empty table §9 lists as a
+*fixed* defect. **`0 ... still waiting` is the tell**: a real dataset almost always
+has days that have not happened yet, so a zero there means the filter matched
+nothing, not that everything has been scored. `-metric` and `-entity` are whole
+names, not prefixes — `-entity "Brand"` does not select `Brand Search`.
+
+**A typo'd `-series` reports an empty database.** `-series` is only a scope for the
+name lookup and is never validated on its own, so a misspelling on a database full
+of forecasts answers `no forecasts stored yet -- run predictmarketing forecast
+first`. That is a typo, not an empty file; `runs` lists the names that exist.
 
 Measured on the real Google Ads file with four weekly backtests: day-1 error 3.5%
 (timesfm3) to 8.4% (chronos2), day-7 error 27-29% for both. The account is easier
@@ -542,6 +949,28 @@ In order. The first rule that matches wins, and whichever applied is printed.
 | Setting | contains `budget`, `bid`, `target`, `limit`, `cap` | stored and aggregated, never forecast |
 | Rate | contains `ctr`, `rate`, `%`, `ratio`, `share`, `avg.`, `avg ` or `average` | forecast; **averaged** across campaigns, not summed |
 | Anything else numeric | — | forecast, summed across campaigns |
+
+**"Not numeric" is decided by counting, and the count has a threshold.** A column
+is numeric only if *every* cell parses. What happens when some do not depends on
+how many:
+
+| Cells that fail | What happens |
+|---|---|
+| fewer than one in ten | the import is **refused**, naming the first: `line 2: column 3 (Clicks): not a number: "--"` |
+| one in ten or more | the column is silently set aside as text — stored in `raw`, never forecast |
+
+The denominator is *rows*, not days, so on a real export (15 campaigns over 1,099
+days is 16,485 rows) the second case is out of reach and a handful of `--` or
+empty cells refuses the whole file. It names **one line at a time**: measured on a
+40-row file with three bad cells, fixing line 2 produced the same error on line 3.
+Fix them all at once, or drop the column from the export.
+
+The silent case is the one to know about, because the only thing that reports it
+is `forecast`'s `stored but not numbers:` line — and **`import` does not print
+that line at all**. `importOne` prints `forecasting:`, the entity list and the
+exclusion lines, and nothing about text, identifier or setting columns. On the
+recurring job a demoted column just stops appearing in `forecasting:`. Read that
+list every time.
 
 `TestColumnClassification` pins every real Google Ads column name to its bucket.
 Two traps it exists to catch:
@@ -571,8 +1000,31 @@ models/.venv/bin/python models/finetune.py "Campaign report.csv" --steps 2000
 ```
 
 Training writes `models/finetuned/chronos2ft/` (4.9 MB) and records what it was
-trained on in `models/finetuned.json`. The worker checksums the adapter before
-use, exactly as the pretrained models checksum their weights.
+trained on in `models/finetuned.json`. The worker checksums the adapter before use. It does
+**not** checksum the base weights: `models/chronos2ft_worker.py` is the one worker
+that does not call `load_verified`, because the adapter is loaded through the
+adapter's own config rather than through `models/weights.json`. It reads `models/weights.json`'s
+`chronos2` entry only for the *path*, and the `base_weights_sha256` in its
+handshake is copied out of `models/finetuned.json`, where the trainer wrote it — a
+record of what was trained on, not a check of what is loading now. So the
+provenance guarantee this project makes for `chronos2` and `timesfm3` is half as
+strong for `chronos2ft`: tamper with the adapter and it refuses; tamper with the
+base weights under it and it forecasts happily. Run `chronos2` once if you want
+those bytes verified — it is the same file. §9 lists "weights sha recorded but
+never verified" as a fixed defect; it is still a claim for half of this model.
+
+Two more things its handshake does differently, since `runs.model_info` stores it
+verbatim and the reports read it back:
+
+- `weights_sha256` carries the **adapter's** hash, not a model's. `models` prints
+  it under "weights sha256" and the comparison report's provenance row prints it
+  under "Weights", with no hint that it means something else here. The base hash
+  sits beside it as `base_weights_sha256`.
+- Starting the worker can **write to `models/`**: `load_registered` rewrites the
+  adapter's `base_model_name_or_path` in place whenever the recorded base path no
+  longer matches `models/weights.json`. That is what lets the project be
+  moved, but it means `models` and `report` are not read-only once `chronos2ft`
+  exists.
 
 **The trainer never stops, shortens, or passes judgement.** `--steps` is the
 whole instruction and every step runs, whatever the data looks like and however
@@ -590,6 +1042,37 @@ is gone from the output. Whether the adapter actually helps is a question for
 `accuracy`, measured on days the model never saw, not a guess made beforehand.
 Facts about how well it does belong in these docs, where someone is reading
 deliberately — never printed at a user who is waiting for a run to finish.
+
+**Its two defaults are Google-Ads-shaped, and `import` overrides neither.**
+`trainFinetune` runs `models/finetune.py <csv> --steps 2000` and nothing else, so
+`--metrics Cost,Impr.,Clicks` and `--group Campaign` stand. Only
+`examples/05-campaigns.csv` carries those column names. On any other export the two
+defaults fail in opposite ways:
+
+| The file | What happens |
+|---|---|
+| has the metrics under other names (`Impressions`, `Spend`) | the trainer exits before training: `columns not in <file>: ['Impr.']`, and lists what the file does have |
+| has no `Campaign` column, or calls it `Campaign name` | **it trains, on one series.** Every row collapses into `(account)`, `running_groups` returns `None`, and the only line printed is `training on 1 series x N days x 3 metrics` |
+
+The second is the dangerous one: it succeeds, it registers, and `train_series: 1` in
+`models/finetuned.json` is the only record. Read that field before believing a
+fine-tune covered the campaigns. This is reachable from a shipped example —
+`examples/03-platform-export.csv` clears the 90-day gate and then fails on `Impr.`.
+`import` recovers correctly (report 1 stands) but the command it prints is the one
+that just failed; add the flags by hand:
+
+```bash
+models/.venv/bin/python models/finetune.py data/imported/FILE.csv \
+  --steps 2000 --metrics "Cost,Impressions,Clicks" --group Campaign
+```
+
+**`--horizon` and `--group` are accepted and recorded nowhere.** The registry keeps
+`steps`, `batch_size`, `context_length`, `learning_rate`, `train_series`,
+`train_seconds`, `trained_through`, `adapter_sha256` and the base model's identity —
+but not the horizon the adapter was fitted for, nor the column it was split by.
+`train_seconds` brackets `fit()` only, not loading or saving. The file is rewritten
+whole each run, so a key the current trainer no longer writes (`hit_time_budget`)
+means the registry predates it.
 
 The registered path is **relative to `models/`**, so moving the project does not
 break it. `share.sh` excludes both the adapter and the registry: it is fitted to
@@ -631,6 +1114,34 @@ WHERE actual IS NOT NULL AND trained_on = 0
 The `accuracy` command applies it and prints how many rows it excluded. Any new
 query you write must filter it too.
 
+**The guard compares strings, and only one side is normalised.** `ingest.go`
+rewrites every date to `2006-01-02` before storing it, so `forecasts.day` is always
+ISO. The trainer does not: it takes `days = sorted({r[0] for r in data})` straight
+off column 0 and records `days[-1]` verbatim. That value travels unchanged into
+`models/finetuned.json`, into the handshake, into `runs.model_info`, and into
+`f.day <= json_extract(..., '$.trained_through')`.
+
+On any export Go accepts but Python cannot sort — `28/01/2026`, `2 Jan 2026` — two
+things break at once and neither says anything. The training matrix is built on a
+**lexicographic** day index, so the series reaches the model out of order; and
+`trained_through` is the lexicographically last date, not the latest, so the SQL
+comparison is ISO-against-not-ISO. Measured on a day-first file the tool imports
+happily: the trainer sorted `['02/02/2026','03/02/2026','28/01/2026','29/01/2026']`
+and built the Cost row as `[12, 13, 10, 11]` where the file's order was
+`10, 11, 12, 13`. The comparison then goes **both ways** depending on the dates:
+
+```sql
+SELECT '2026-01-29' <= '29/01/2026';   -- 1: every row marked trained_on,
+                                       --    chronos2ft vanishes from `accuracy`
+SELECT '2026-06-03' <= '03/06/2026';   -- 0: guard off, memorised days scored
+```
+
+The first outcome is indistinguishable from the documented-correct "chronos2ft is
+absent because every forecast is inside its training window". **Before trusting an
+absence or a score, check that `trained_through` in `models/finetuned.json` is
+`YYYY-MM-DD`.** If it is not, the export was not ISO-dated: convert the date column
+and retrain. Google Ads exports ISO, so this does not bite the normal path.
+
 ## 5. Hard rules
 
 These are not style preferences. Each one exists because its absence produced a
@@ -649,6 +1160,19 @@ wrong answer that looked right.
   value, because you chose next week's yourself.
 - **Never score a fine-tuned model on days it was trained on.** Filter
   `trained_on = 0`. See §4c.
+- **Every transaction in `db.go` writes first, and that is load-bearing.** A
+  transaction that reads before it writes has to upgrade its snapshot, and under
+  contention SQLite fails that upgrade **immediately** — `busy_timeout` does not
+  apply to it. Measured against a concurrent writer: 1.03s elapsed with
+  `busy_timeout=10000`, not 10s. `BEGIN IMMEDIATE` fixes it. Latent today only
+  because no transaction here reads first; keep it that way, or take the
+  immediate lock.
+- **`inside_range` only works for a model that returns exactly 0.1 and 0.9.** The
+  view's `low`/`high` are self-joins pinned to those literals. A model with any
+  other band yields NULL, which `accuracy` prints as **`in range 0%`** —
+  indistinguishable from a model whose band never contained the actual.
+  Demonstrated with a synthetic q05/q95 run: same medians, same error, `0%`
+  against `100%`. Widening the band means widening the view.
 - **Store every campaign; model only the switched-on ones.** Nothing is filtered
   on the way into the database — paused campaigns keep their full history. The
   status rule applies to the model calls and the fine-tune, and to nothing else.
@@ -664,7 +1188,18 @@ wrong answer that looked right.
 - **Quantile crossing is repaired, not rejected.** Both models predict each
   quantile independently, so mild crossing (~0.2%) is expected. It is fixed by
   sorting — monotonic rearrangement, a standard and strictly improving correction —
-  and the size of the largest correction is reported. Crossing beyond 5% is refused.
+  and the size of the largest correction is reported **by `forecast`**. `import`
+  discards it: only `main.go` reads `LastCrossing`, so on the recurring job a
+  repair happens silently. If you want to know how much rearranging a model
+  needed, run `forecast` for that model once.
+
+  The check has a floor. `negligible := scale < 1e-6` is **absolute**, not
+  relative to the series' own size, and below it the whole ordering test —
+  including the 5% refusal — is skipped. Measured: a fully inverted forecast at
+  `1e-7` was accepted with `worst=0`, while the same shape at `1e-5` was refused
+  at 25%. Marketing units never go that small, so this is a documented mechanism
+  rather than a live hazard; it matters if this tool is ever pointed at a series
+  in different units. Crossing beyond 5% is refused.
 - **Day/month order is decided once per file**, never per row. A file where nothing
   settles it is refused, because guessing shifts every date by up to eleven months.
 - **Resolve paths against the binary**, not the working directory (`installDir`).
@@ -689,8 +1224,23 @@ wrong answer that looked right.
 
 - A forecast takes **~3 seconds** whether the horizon is 7 days or 400 — almost all
   of it is loading the model. Hence the 5-minute timeout is ~100x headroom.
+  **That timeout covers the reply only.** It lives in `readLine`; `startWorker`
+  waits for the handshake with a bare blocking `Scan()` and no deadline, so a
+  worker that stalls *while loading* rather than exiting hangs the command
+  forever, with nothing printed after the model library's own progress bar.
+  Measured: a fixture that sleeps without printing a handshake was still blocked
+  after 20s. A worker that dies before the handshake is handled and tested
+  (`testdata/badworkers/nohandshake_worker.py`); one that never returns is neither, since
+  `testdata/badworkers/hang_worker.py` sends its handshake first. If a model command sits silent for minutes, suspect
+  that shape: Ctrl-C and check the worker's startup path, not the forecast.
 - Python side installed: **~820 MB** (torch is ~570 MB of it). Weights: **1.7 GB**.
 - A clean `./install.sh` measured **182 seconds** on a fast connection.
+- `go test .` **33s**; `go test -race -count=2 .` **71s**; `sh examples/walkthrough.sh`
+  **28s**; fuzzing runs ~1,100 exec/s. On `examples/05-campaigns.csv`,
+  `import -no-finetune` takes **7s** against `report`'s **0.02s** — which is why
+  `report` exists for drawing changes.
+- Cross-compiles cleanly to six targets; `build-dist.sh` ships four. No Windows
+  build is shipped, because `install.sh` is POSIX sh.
 - ONNX: Chronos-2 has **no path** — `torch.export` cannot capture it because it
   branches on whether the input contains NaN, and that handling is real semantics.
   TimesFM 3.0's core transformer **does** export correctly (relative diff 2.19e-06)
@@ -723,7 +1273,11 @@ made first; on an empty one it stops at `no such table: runs`.
 Every line must say `EXACT`. The stored numbers must equal the library's output
 exactly, sorted only where the model's own quantiles crossed.
 
-To see every normal use of the tool run for real: `./examples/walkthrough.sh`
+To see the single-file commands run for real: `./examples/walkthrough.sh`. It
+exercises `forecast`, `models` and `runs` only — every forecast in it prints
+`for 1: (account)`, so it never forecasts a campaign and never touches
+`examples/05-campaigns.csv`. It does not run `import`, `report` or `accuracy`, which
+are the recurring job. Use it to see the protocol work, not as proof the workflow does.
 
 ## 9. Why the tests look the way they do
 
@@ -768,3 +1322,43 @@ a hypothetical. The ones worth knowing about, because they are easy to reintrodu
 | The console summary indexing the account unconditionally | every `-entities` run that excluded the account panicked with "index out of range [0] with length 0"; the report template had been fixed for this, the summary beside it had not |
 
 None of these were in the models. All were in the surrounding code.
+
+### What the suite does not cover
+
+The table above is what the tests *do* guarantee. This is the other half, and it is
+the half a future agent needs, because a green `go test` here is not the same thing
+as a working tool. Measured with `go tool cover -func`: **59.1% of statements**.
+
+**Whole commands are never executed by a test.** Coverage is 0.0% for every `cmd*`
+function — `cmdForecast`, `cmdModels`, `cmdRuns`, `cmdAccuracy`, `cmdSetup`,
+`cmdImport` — and for `main` itself. The units underneath them are well covered; the
+flag parsing, the defaulting, the console output and the ordering of steps are not.
+`TestHelpListsEveryFlag` pins that a flag is *listed*, never that it does anything.
+
+**`rerender.go` — the entire `report` command — is 0.0% covered**, all seven
+functions. `TestReportCommandIsDocumented` checks that five documents *mention* it
+and that the help lists it. Nothing runs it. The `%`-sign limit those documents all
+state is asserted as prose and verified nowhere. An exact-equality test is cheap and
+available: `import` then `report` on `examples/05-campaigns.csv` produce
+byte-identical pages.
+
+**`import.go`'s orchestration is 0.0% covered** — `importOne`, `runModel`,
+`trainFinetune`, `defaultPath` — while the units around it are covered.
+
+**`TestDefaultsAnchorToTheInstallNotTheShell` never runs.** It skips under `go test`,
+always: the test binary lives in the build cache, so `installDir()` finds no
+`models/` beside it and the test's own guard skips. The rule it protects — that
+`data/` and `pm.db` anchor to the installation — is therefore enforced by nothing
+automatic and has to be checked by hand, as the `verify` skill says.
+
+**`TestBinaryWorksFromAnotherDirectory` tests whatever binary is on disk.** `go test`
+does not build `./predictmarketing`, so it either skips or runs a build from some
+earlier commit. Measured: it passed against a binary reporting a different commit
+from HEAD. Build first, or it is theatre.
+
+**Fifteen tests vanish silently without `./install.sh`.** In a tree with
+`models/.venv` removed — exactly what `share.sh` hands someone — the suite still
+exits 0 and prints `ok`, with 139 passes instead of 153 and 15 skips. What goes
+missing is every protocol test, both weights tests and the perturbation test: the
+checks that prove the models are real. A green run on a fresh clone means less than
+a green run here.

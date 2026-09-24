@@ -46,6 +46,10 @@ facts belong in `AGENTS.md`.
 | `add-a-model` | wiring another forecasting model in alongside the three there are |
 | `verify` | proving a change is sound before saying it works |
 | `sqlite-optimization` | touching the schema, a pragma, an index or a query plan |
+| `finish-an-import` | an import was interrupted, crashed, or wrote only one report |
+| `refused-forecast` | a model returned an unusable forecast, hung, or its quantiles look wrong |
+| `db-repair` | the database is refused on open, or `accuracy` says nothing on a database that has runs |
+| `hand-off` | packaging this folder for someone else — check what you are actually sending |
 
 ## Recent shape changes
 
@@ -100,9 +104,11 @@ Several things moved, so older notes may mislead:
 - **Never put the chart readout inside the scroller.** It scrolls away with the
   content and shows nothing, and a synthetic mousemove in a test will not catch
   it — check it in a browser.
-- **The comparison chart is fixed-width inside a scroller, not scaled to fit.**
-  That is what makes the crosshair possible; scaling it would break the
-  coordinate mapping (`AGENTS.md` §2c).
+- **The comparison chart is fixed-width inside a scroller, not scaled to fit** —
+  for **legibility**, not for the crosshair. `fromEvent` already divides by the
+  viewBox-to-rect ratio, so the crosshair survives any uniform scaling (measured
+  at 5.25x). Keep the fixed width; do not defend it with the coordinate-mapping
+  reason, which is false (`AGENTS.md` §2c).
 - **`import` is the recurring job now** (`AGENTS.md` §2c): `data/` in,
   two comparison reports out, CSV filed into `data/imported/`. It refuses under
   90 days. `forecast` is still the single-model command underneath it.

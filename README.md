@@ -124,6 +124,17 @@ without Go, which are most of that. It leaves out the Python environment, the
 model weights, any fine-tuned adapter and your own databases, which is the 2.5 GB
 their `./install.sh` downloads fresh anyway.
 
+**It also leaves out your `data/` folder and your `.git` history**, both excluded
+wholesale. That matters: `data/` holds the export you imported and the reports made
+from it, which name real campaigns and real spend. Earlier versions excluded reports
+by filename pattern and the pattern twice stopped matching what the tool writes, so
+a share carried a real account's numbers. The folder is excluded by name now because
+the folder's name is the thing that does not change.
+
+The copy they receive has no database, so their first `import` starts a fresh
+history. Check what you are sending before you send it — the `hand-off` skill has
+the list.
+
 Hand them the folder. They open a terminal in it and run **one command**:
 
 ```bash

@@ -98,6 +98,7 @@ func TestShareScriptExcludesGeneratedFiles(t *testing.T) {
 		"*.db",             // the database itself
 		"models/finetuned", // an adapter fitted to one person's data
 		"models/.venv",
+		"./data", // the whole inbox: the export itself, and import's reports
 	} {
 		if !strings.Contains(script, want) {
 			t.Errorf("share.sh does not exclude %q", want)
@@ -107,6 +108,25 @@ func TestShareScriptExcludesGeneratedFiles(t *testing.T) {
 	name := "examples/02-marketing_forecast_chronos2.html"
 	if ok, _ := filepath.Match("*_forecast*.html", filepath.Base(name)); !ok {
 		t.Errorf("the exclusion pattern does not match a real report name: %s", name)
+	}
+
+	// Excluding by report-name pattern is not enough, and has now failed twice.
+	// `*_forecast.html` stopped matching when the model went into the filename,
+	// and `*_forecast*.html` never matched `import`'s pages at all -- so a share
+	// carried a real account's export and reports. The folder is excluded
+	// wholesale because that is the thing with a stable name; the patterns stay
+	// for reports `forecast` writes next to a CSV somewhere else.
+	for _, name := range []string{
+		"data/imported/Campaign report.csv",
+		"data/reports/Campaign report_models.html",
+		"data/reports/Campaign report_with-finetune.html",
+	} {
+		if ok, _ := filepath.Match("*_forecast*.html", filepath.Base(name)); ok {
+			continue // caught by the report pattern as well, fine
+		}
+		if !strings.Contains(script, "./data") {
+			t.Errorf("nothing in share.sh excludes %s", name)
+		}
 	}
 }
 

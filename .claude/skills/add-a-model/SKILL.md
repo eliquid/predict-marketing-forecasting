@@ -45,16 +45,43 @@ import needs its name in that list in `import.go` too.
 
    Keep these parts exactly as they are:
    - the `_OUT` / `sys.stdout = sys.stderr` block (stdout belongs to the protocol)
-   - the `load_verified()` call (recomputes the weights sha256 before use)
+   - the `load_verified()` call (recomputes the weights sha256 before use).
+     `models/chronos2ft_worker.py` is the one shipped exception: it verifies its
+     adapter instead and leaves the base weights unchecked (`AGENTS.md` §4c).
+     Copy that pattern only for a model that is a *derivative* of one already in
+     `models/weights.json`, and say in the handshake which hash you are reporting.
    - the `reply({...})` handshake, declaring `covariates` honestly
 
    Change only: which library is imported, how the model is loaded, and the one
    call that turns a `(metrics, days)` matrix into `(metrics, horizon, quantiles)`.
 
+   **The handshake's quantiles must include 0.1 and 0.9 as decimal literals, in
+   ascending order.** `forecast_accuracy` joins `low` and `high` on exactly those
+   two values, so a model with any other band reports `in range 0%` in
+   `accuracy` — a number that reads as a catastrophically bad model rather than a
+   missing column. Ascending matters separately: `checkForecast` sorts each day's
+   values and `saveRun` then labels position *j* with `quantiles[j]`, so a
+   declared order of `[0.1, 0.2, 0.9]` answered out of order is stored under the
+   wrong labels and reported as an ordinary small crossing. Nothing validates
+   either property. Check both right after the first stored run:
+
+   ```bash
+   sqlite3 pm.db "SELECT COUNT(*), SUM(inside_range IS NULL)
+                  FROM forecast_accuracy WHERE model='yourmodel' AND actual IS NOT NULL;"
+   ```
+
+   The second number must be 0. Note `np.arange(0.1, 1.0, 0.1)` gives exact 0.1
+   and 0.9 but a 0.3 of `0.30000000000000004` — use stored literals, not `arange`.
+
 4. **Add one line** to the `models` map in `worker.go`:
    ```go
    "yourmodel": "models/yourmodel_worker.py",
    ```
+
+   That map governs `forecast`, `models` and `report`. It does **not** govern
+   `import`, which names its models directly (`import.go` runs `chronos2` and
+   `timesfm3` for report 1, then `chronos2ft` for report 2). A new pretrained
+   model added only to the map will never run on the recurring job.
 
 5. **Verify.**
    ```bash
