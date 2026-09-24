@@ -80,10 +80,10 @@ var reportTmpl = template.Must(template.New("report").Parse(`<!doctype html>
 
   {{if .Excluded}}
   <p class="note">
-    Not forecast, because nothing moved during this period (paused for the whole
-    of it, or no activity recorded):
+    Not forecast, because the export says they are switched off, or because
+    nothing they record moved during this period:
     <strong>{{range $i, $e := .Excluded}}{{if $i}}, {{end}}{{$e}}{{end}}</strong>.
-    Their rows are still stored; there was simply nothing to predict.
+    Their full history is still stored, and still counted in the account total.
   </p>
   {{end}}
 

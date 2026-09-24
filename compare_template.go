@@ -154,8 +154,11 @@ var compareTmpl = template.Must(template.New("compare").Parse(`<!doctype html>
   <div class="callout">
     <div class="cap">Not forecast</div>
     <strong>{{range $i, $e := .Excluded}}{{if $i}}, {{end}}{{$e}}{{end}}</strong>
-    — nothing moved during this period (paused for the whole of it, or no
-    activity recorded). Their rows are still stored; there was nothing to predict.
+    — switched off in the export, or nothing they record moved during this
+    period. Their full history is still stored and still counted in the account
+    total; a campaign that is paused will spend nothing until someone turns it
+    back on, which is a decision rather than something to predict. That is also
+    why they are not in the dropdown above.
   </div>
   {{end}}
 

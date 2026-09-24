@@ -210,7 +210,7 @@ func TestReportNamesExcludedCampaigns(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := string(page)
-	for _, want := range []string{"Paused One", "Paused Two", "nothing moved during this period"} {
+	for _, want := range []string{"Paused One", "Paused Two", "switched off", "still stored"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("report does not mention %q", want)
 		}
@@ -222,7 +222,7 @@ func TestReportNamesExcludedCampaigns(t *testing.T) {
 		t.Fatal(err)
 	}
 	page, _ = os.ReadFile(path)
-	if strings.Contains(string(page), "nothing moved during this period") {
+	if strings.Contains(string(page), "switched off") {
 		t.Error("the exclusion note appears even though nothing was excluded")
 	}
 }
