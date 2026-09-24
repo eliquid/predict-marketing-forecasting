@@ -522,3 +522,38 @@ func TestReportsFolderIsDocumented(t *testing.T) {
 		t.Errorf("reportPath puts reports at %s", got)
 	}
 }
+
+// Storing every campaign but modelling only the switched-on ones is the rule a
+// future reader is most likely to undo, because from the report alone it looks
+// like campaigns went missing. It has to be written down everywhere someone
+// might look, and the two implementations have to agree on the vocabulary.
+func TestPausedCampaignRuleIsDocumented(t *testing.T) {
+	for _, f := range []string{
+		"README.md", "AGENTS.md", "CLAUDE.md",
+		".claude/skills/new-export/SKILL.md",
+		".claude/skills/finetune/SKILL.md",
+	} {
+		b, err := os.ReadFile(f)
+		if err != nil {
+			t.Errorf("%s: %v", f, err)
+			continue
+		}
+		text := string(b)
+		if !strings.Contains(text, "switched on") && !strings.Contains(text, "switched off") {
+			t.Errorf("%s does not explain that only switched-on campaigns are modelled", f)
+		}
+	}
+
+	// The Go and Python state tables have to agree, or the adapter is trained on
+	// campaigns the forecaster will refuse to run.
+	py, err := os.ReadFile(filepath.Join("models", "finetune.py"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for state, running := range campaignStates {
+		want := fmt.Sprintf("%q: %s", state, map[bool]string{true: "True", false: "False"}[running])
+		if !strings.Contains(string(py), strings.ReplaceAll(want, `"`, `"`)) {
+			t.Errorf("models/finetune.py CAMPAIGN_STATES is missing %s", want)
+		}
+	}
+}

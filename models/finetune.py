@@ -36,9 +36,55 @@ def sha256(path):
     return h.hexdigest()
 
 
+# The words an ad platform writes in its status column, and whether each one
+# means the campaign is switched on. This has to agree with campaignStates in
+# ingest.go: training on a campaign the forecaster then refuses to run is the
+# worst of both, and the adapter would be fitted to series nobody ever sees.
+CAMPAIGN_STATES = {
+    "enabled": True, "active": True, "running": True, "live": True, "serving": True,
+    "paused": False, "removed": False, "ended": False, "disabled": False,
+    "archived": False, "stopped": False, "deleted": False, "draft": False,
+}
+
+
+def running_groups(hdr, data, group_col):
+    """The campaigns the export says are switched on as of its last day, or None
+    when the file carries no campaign-status column.
+
+    The column is found by its values rather than its name. A Google Ads export
+    calls it "Campaign status", but the same file carries a "Status" column of
+    serving states ("Eligible (Limited)") and a "Status reasons" column of prose;
+    matching on the word "status" picks the wrong one. A column is believed only
+    when every value in it is a state in CAMPAIGN_STATES.
+    """
+    ix = {n: i for i, n in enumerate(hdr)}
+    if group_col not in ix:
+        return None
+    col = None
+    for i in range(len(hdr)):  # file order, so the leftmost one wins
+        vals = {r[i].strip().lower() for r in data if i < len(r) and r[i].strip()}
+        if vals and vals <= set(CAMPAIGN_STATES):
+            col = i
+            break
+    if col is None:
+        return None
+    last = max(r[0] for r in data)
+    return {r[ix[group_col]] for r in data
+            if r[0] == last and CAMPAIGN_STATES.get(r[col].strip().lower(), False)}
+
+
 def load_series(csv_path, metrics, group_col):
-    """One (metrics, days) matrix per group, plus the total. Skips groups that
-    never moved -- a paused campaign teaches the model nothing."""
+    """One (metrics, days) matrix per group, plus the total across all of them.
+
+    Only the campaigns the export says are switched on are trained on. A paused
+    campaign's next days are a decision rather than a forecast, so it is not one
+    the forecaster is ever asked about; fitting the adapter to its flat zeros
+    spends training steps on series that will never be predicted. Groups that
+    never moved are skipped for the same reason.
+
+    The account total is the sum of every row, switched on or not, because that
+    is what the account actually spent.
+    """
     import numpy as np
     rows = list(csv.reader(open(csv_path)))
     hdr, data = rows[0], rows[1:]
@@ -61,10 +107,18 @@ def load_series(csv_path, metrics, group_col):
             m[k][di[r[0]]] += v
             total[k][di[r[0]]] += v
 
-    out = [("(account)", total.astype("float32"))]
+    running = running_groups(hdr, data, group_col) if group_col else None
+    out, skipped = [("(account)", total.astype("float32"))], []
     for k, m in per.items():
-        if k != "(account)" and m.sum() > 0:
-            out.append((k, m.astype("float32")))
+        if k == "(account)":
+            continue
+        if m.sum() <= 0 or (running is not None and k not in running):
+            skipped.append(k)
+            continue
+        out.append((k, m.astype("float32")))
+    if skipped:
+        print(f"not training on {len(skipped)} switched-off or never-active "
+              f"campaign(s): {', '.join(sorted(skipped))}")
     return out, days
 
 

@@ -77,6 +77,17 @@ Several things moved, so older notes may mislead:
   forecast history across databases and `accuracy` silently loses it.
 - **Reports are written to `data/reports/`**, never beside the export: `data/`
   has to show at a glance what is still waiting to be read.
+- **Storing and modelling are separate decisions** (`AGENTS.md` §2a1). Every
+  campaign in the export is stored in full — `raw`, `series`, and the `(account)`
+  total. Only the campaigns the export's status column says are **switched on as
+  of its last day** are forecast or trained on. Both halves of that rule exist:
+  one long-dead campaign forecast anyway returned quantiles 6.9% out of order and
+  destroyed a whole report. The report dropdowns come from the runs, so they show
+  only what was forecast, automatically.
+- **`campaignStates` (`ingest.go`) and `CAMPAIGN_STATES` (`finetune.py`) must
+  stay in step.** The status column is found by its *values*, never its name —
+  a Google Ads export also carries `Status` and `Status reasons`, and matching on
+  the word picks the wrong one.
 - **Never put a time limit on training.** A `--budget` wall clock silently cut a
   real run to 1,210 of 2,000 steps and the resulting adapter looked finished in
   every report. Removed everywhere; lower `--steps` instead (`AGENTS.md` §2c).

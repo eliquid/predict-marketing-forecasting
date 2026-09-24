@@ -71,7 +71,7 @@ next forecast.
    5 rows per day, split by "Campaign" (750 rows kept in the raw table)
    forecasting: Cost, Impr., Clicks
    for 5: (account), Brand Search, Shopping - All, ...
-   no activity at all, not forecast: Video Awareness, ...
+   switched off in the export, stored but not forecast: Video Awareness, ...
    not forecast, look like identifiers: Campaign ID
    stored, not forecast (you set these, you do not predict them): Budget
    stored but not numbers: Campaign status, Campaign, ...
@@ -80,6 +80,22 @@ next forecast.
    If a column you expected to be forecast is in one of the "not forecast"
    lines, that is the classification rule (`AGENTS.md` §4b) — check the name
    before assuming a bug.
+
+   **A missing campaign is not a missing campaign.** `switched off in the
+   export` means the CSV's campaign-status column says it is paused as of the
+   file's last day, so it is stored in full and skipped by every model
+   (`AGENTS.md` §2a1). It will not be in the report's dropdown either, because
+   that lists what was forecast. Check its status in the export before treating
+   it as a bug:
+
+   ```bash
+   awk -F, 'NR>1 && $1==d {print $3": "$2}' d="$(awk -F, 'NR>1{print $1}' \
+       "Campaign report.csv" | sort | tail -1)" "Campaign report.csv" | sort
+   ```
+
+   Its history is still queryable — `SELECT ... FROM series WHERE entity=...`
+   returns every day of it. Only the forecast is absent, and only because
+   nothing can be forecast about a campaign that is switched off.
 
 3. **Score the previous forecasts**, now that their days have actuals:
 

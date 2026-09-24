@@ -29,6 +29,24 @@ registry said `steps: 1210`, and nothing else did. How long it takes is a
 property of how much data you have; on a two-year, fourteen-campaign export it
 was about 17 minutes.
 
+It prints which campaigns it is **not** training on before it starts:
+
+```
+not training on 9 switched-off or never-active campaign(s): ...
+training on 7 series x 1099 days x 3 metrics
+```
+
+The adapter is fitted only to campaigns the export says are **switched on** as
+of its last day, and that list must match the one `forecast` and `import` print
+(`AGENTS.md` §2a1). Paused campaigns are still stored in full; they are left out
+of training and forecasting only.
+Training on a campaign the forecaster then refuses to run spends steps fitting
+series nobody will ever see. `running_groups` in `models/finetune.py` and
+`runningEntities` in `ingest.go` implement the same rule from the same column,
+and `CAMPAIGN_STATES` / `campaignStates` are the lists that have to stay in
+step. `python3 models/test_finetune.py` checks the Python half on its own, with
+no venv needed; `go test -run TestFinetuneAgreesOnWhatIsRunning` runs it too.
+
 Writes `models/finetuned/chronos2ft/` (4.9 MB) and `models/finetuned.json`.
 
 Then it is just another model:

@@ -241,7 +241,7 @@ That one command:
   5 rows per day, split by "Campaign"
   forecasting: Cost, Impr., Clicks
   for 5: (account), Brand Search, Shopping - All, Performance Max, Display Remarketing
-  no activity at all, not forecast: Video Awareness
+  switched off in the export, stored but not forecast: Video Awareness
 
   running chronos2
   running timesfm3
@@ -402,7 +402,7 @@ chronos2: 150 days of "05-campaigns" -> 7 days ahead
   5 rows per day, split by "Campaign" (750 rows kept in the raw table)
   forecasting: Cost, Impr., Clicks
   for 5: (account), Brand Search, Shopping - All, Performance Max, Display Remarketing
-  no activity at all, not forecast: Video Awareness
+  switched off in the export, stored but not forecast: Video Awareness
   not forecast, look like identifiers: Campaign ID
   stored, not forecast (you set these, you do not predict them): Budget
   stored but not numbers: Campaign status, Campaign, Currency code
@@ -413,10 +413,36 @@ You get a forecast for **each campaign and for the account as a whole**.
 **Budgets, bids and targets are stored but not forecast** — they are dials you
 turn, and predicting them just replays the number you set. **Rates are forecast**:
 `4.20%` reads as a number, is predicted, and comes back with its sign on. At
-account level a rate is the mean across campaigns, never the sum. Paused
-campaigns never change, so there is nothing to forecast and they are named rather
-than silently dropped. `Campaign ID` is a label, not a quantity, so it is stored
-but never added up.
+account level a rate is the mean across campaigns, never the sum. `Campaign ID`
+is a label, not a quantity, so it is stored but never added up.
+
+### Everything is stored. Only switched-on campaigns are forecast.
+
+These are two different things, and the difference matters.
+
+**The database gets the whole export.** Every row, every campaign, enabled or
+paused or long dead, with its full daily history. The `(account)` total is the
+sum of all of them, because that is what the account actually spent. Nothing is
+dropped on the way in — a campaign you pause today may be back next month, and
+its history needs to already be there when it is.
+
+**The models only see what is switched on.** The export's campaign-status column
+decides it, read as of the file's **last day**. Paused campaigns are named in the
+terminal and in the report, and skipped by TimesFM, Chronos-2 and the fine-tune
+alike — including the training step, so the adapter is fitted to exactly the
+campaigns it will be asked about.
+
+This is not tidiness. A paused campaign's next seven days are a decision, not a
+forecast: it spends nothing until someone turns it back on. Asking a model anyway
+returns noise hovering around zero, and on a real 1,099-day export one campaign
+that had not spent since the previous November came back with quantiles 6.9% out
+of order, failed validation, and took the entire second report down with it.
+
+The campaign dropdown in the report lists what was forecast, so paused campaigns
+are in the database but not in the menu.
+
+If your export has no status column, campaigns whose every metric is flat for the
+whole period are excluded instead, on the same grounds.
 
 Everything from the original file is kept in the `raw` table for ad-hoc questions:
 
@@ -735,7 +761,7 @@ stuck rather than busy
 ## Testing
 
 ```bash
-go test ./...                                   # 165 tests
+go test ./...                                   # 169 tests
 go test -race -count=2 ./...                    # state leakage between tests
 go test -run '^$' -fuzz FuzzReadCSV -fuzztime 60s
 ```

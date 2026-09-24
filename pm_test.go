@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -553,6 +554,101 @@ func TestUnchangingCampaignsAreNotForecast(t *testing.T) {
 		if _, ok := d.Values[dead]; !ok {
 			t.Errorf("%q was dropped; it should still be stored", dead)
 		}
+	}
+}
+
+// A campaign that spent heavily for a year and was then switched off is not a
+// forecasting question: it will spend nothing until someone turns it back on.
+// The old rule only caught series that never moved, so a campaign like this was
+// sent to the models, which returned noise around zero whose quantiles came back
+// out of order and took a whole report down with it.
+//
+// It must still be stored in full. Only the model calls skip it.
+func TestSwitchedOffCampaignsAreNotForecast(t *testing.T) {
+	var b strings.Builder
+	// A serving-status column sits next to the campaign-status one in a real
+	// export, and must not be mistaken for it.
+	b.WriteString("Day,Campaign status,Campaign,Status,Cost,Impr.,Clicks\n")
+	for i := 0; i < 120; i++ {
+		fmt.Fprintf(&b, "%s,Enabled,Live,Eligible (Limited),%d,%d,%d\n",
+			day(i), 100+i, 5000+i*7, 20+i)
+		fmt.Fprintf(&b, "%s,Enabled,Live Two,Eligible (Limited),%d,%d,%d\n",
+			day(i), 60+i, 3000+i*5, 10+i)
+		// Spent for the first 60 days, switched off after that.
+		status, cost := "Enabled", 80+i
+		if i >= 60 {
+			status, cost = "Paused", 0
+		}
+		fmt.Fprintf(&b, "%s,%s,Zombie,Eligible,%d,%d,%d\n", day(i), status, cost, cost*40, cost/4)
+	}
+	d, err := readCSV(writeTemp(t, "ads.csv", b.String()), nil, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if want := []string{"Zombie"}; len(d.Paused) != 1 || d.Paused[0] != want[0] {
+		t.Fatalf("paused = %v, want %v", d.Paused, want)
+	}
+	for _, e := range d.Entities {
+		if e == "Zombie" {
+			t.Error("Zombie is switched off and must not be sent to a model")
+		}
+	}
+	if !slicesContainsFold(d.Entities, "Live") {
+		t.Errorf("Live is switched on and must be forecast; entities = %v", d.Entities)
+	}
+	if !slicesContainsFold(d.Inactive, "Zombie") {
+		t.Errorf("Zombie must be named as excluded; inactive = %v", d.Inactive)
+	}
+
+	// Every campaign is still stored, in full, whatever its status.
+	col, ok := d.Values["Zombie"]["Cost"]
+	if !ok {
+		t.Fatal("Zombie was dropped from the data; it must still be stored")
+	}
+	if len(col) != len(d.Days) {
+		t.Errorf("Zombie has %d days stored, want all %d", len(col), len(d.Days))
+	}
+	if col[0] == 0 {
+		t.Error("Zombie's spending history was not kept")
+	}
+	// The account total still includes it -- that is what the account spent.
+	if d.Values[AccountEntity]["Cost"][0] != d.Values["Live"]["Cost"][0]+
+		d.Values["Live Two"]["Cost"][0]+col[0] {
+		t.Error("the account total must still include switched-off campaigns")
+	}
+}
+
+// The status column is found by its values, so a file without one still works.
+func TestNoStatusColumnFallsBackToTheNeverMovedRule(t *testing.T) {
+	var b strings.Builder
+	b.WriteString("Day,Campaign,Cost,Impr.,Clicks\n")
+	for i := 0; i < 120; i++ {
+		fmt.Fprintf(&b, "%s,Live,%d,%d,%d\n", day(i), 100+i, 5000+i*7, 20+i)
+		fmt.Fprintf(&b, "%s,Flat,0,0,0\n", day(i))
+	}
+	d, err := readCSV(writeTemp(t, "ads.csv", b.String()), nil, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(d.Paused) != 0 {
+		t.Errorf("no status column, so nothing can be known to be paused: %v", d.Paused)
+	}
+	if len(d.Inactive) != 1 || d.Inactive[0] != "Flat" {
+		t.Errorf("inactive = %v, want [Flat]", d.Inactive)
+	}
+}
+
+// The Go and Python sides have to agree on what "switched on" means. The Python
+// half is checked by its own stdlib self-check; run it here so it cannot rot.
+func TestFinetuneAgreesOnWhatIsRunning(t *testing.T) {
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("no python3 on PATH")
+	}
+	out, err := exec.Command(python, filepath.Join("models", "test_finetune.py")).CombinedOutput()
+	if err != nil {
+		t.Fatalf("models/test_finetune.py failed: %v\n%s", err, out)
 	}
 }
 

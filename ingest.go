@@ -56,10 +56,14 @@ type Data struct {
 	GroupBy string
 	// Values is entity -> metric -> one value per day.
 	Values map[string]map[string][]float64
-	// Inactive lists entities whose every metric is constant for the whole period
-	// (paused campaigns). Nothing to forecast, so they are stored but not sent to
-	// a model.
+	// Inactive lists entities that are stored but not sent to a model: everything
+	// in Paused, plus anything whose every metric is constant for the whole
+	// period. Both are kept in full in the raw and series tables.
 	Inactive []string
+	// Paused is the subset of Inactive that the export itself says is switched
+	// off, read from its campaign-status column. Kept separate only so the output
+	// can give the right reason.
+	Paused []string
 
 	Skipped []string // text columns: stored, never forecast
 
@@ -585,13 +589,33 @@ func readCSV(path string, want []string, groupBy string) (*Data, error) {
 		}
 	}
 
-	// An entity whose every metric never changes has nothing to forecast -- the
-	// answer is the constant it already is. In a Google Ads export these are the
-	// paused campaigns: zero cost, zero clicks, and a budget that never moves.
-	// They stay in the raw table and in the series table, and are named in the
-	// output, but they are not sent to a model.
+	// Two reasons an entity is stored but never sent to a model.
+	//
+	// The export says it is switched off. A paused campaign's next seven days are
+	// a decision, not a forecast: it will spend nothing until someone turns it
+	// back on. Asking a model anyway returns noise hovering around zero whose
+	// quantiles come back in no particular order, which fails the sanity check in
+	// checkForecast and takes the whole report down with it. One long-dead
+	// campaign did exactly that.
+	//
+	// Or every metric it records is constant for the whole period, so the answer
+	// is the constant it already is. This catches a file with no status column,
+	// and a campaign switched on but never funded.
+	//
+	// Either way it stays in the raw table and in the series table, and is named
+	// in the output. Nothing is dropped from the database.
+	running := runningEntities(d)
 	live := d.Entities[:0]
 	for _, e := range d.Entities {
+		if e == AccountEntity {
+			live = append(live, e)
+			continue
+		}
+		if running != nil && !running[e] {
+			d.Paused = append(d.Paused, e)
+			d.Inactive = append(d.Inactive, e)
+			continue // kept in d.Values so it is still stored, just not forecast
+		}
 		varies := false
 		for _, n := range d.Names { // forecastable metrics only, not settings
 			col := d.Values[e][n]
@@ -605,11 +629,10 @@ func readCSV(path string, want []string, groupBy string) (*Data, error) {
 				break
 			}
 		}
-		if varies || e == AccountEntity {
+		if varies {
 			live = append(live, e)
 		} else {
 			d.Inactive = append(d.Inactive, e)
-			// kept in d.Values so it is still stored, just not forecast
 		}
 	}
 	d.Entities = live
@@ -814,6 +837,98 @@ func looksLikeSetting(name string) bool {
 		}
 	}
 	return false
+}
+
+// campaignStates are the words an ad platform writes in its status column, and
+// whether each one means the campaign is switched on.
+var campaignStates = map[string]bool{
+	"enabled": true, "active": true, "running": true, "live": true, "serving": true,
+	"paused": false, "removed": false, "ended": false, "disabled": false,
+	"archived": false, "stopped": false, "deleted": false, "draft": false,
+}
+
+// statusColumn finds the column holding campaign state, by its values rather
+// than its name.
+//
+// A Google Ads export calls it "Campaign status", but the file also carries a
+// "Status" column holding serving states ("Eligible (Limited)") and a "Status
+// reasons" column holding prose. Matching on the word "status" picks the wrong
+// one. A column is believed only when every value it holds is a state in
+// campaignStates, which those two fail and a campaign-name column fails too.
+func statusColumn(d *Data) string {
+	known, unknown := map[string]bool{}, map[string]bool{}
+	for _, r := range d.Raw {
+		for _, name := range d.Skipped { // text columns only
+			v := strings.ToLower(r.Data[name])
+			if v == "" {
+				continue
+			}
+			if _, ok := campaignStates[v]; ok {
+				known[name] = true
+			} else {
+				unknown[name] = true
+			}
+		}
+	}
+	for _, name := range d.Skipped { // file order, so the leftmost one wins
+		if known[name] && !unknown[name] {
+			return name
+		}
+	}
+	return ""
+}
+
+// runningEntities returns the entities the export says are switched on as of its
+// last day, or nil when the file carries no campaign-status column -- in which
+// case the constant-series rule is the only one that applies.
+//
+// An entity with no row on the last day is not running: it is not in the current
+// state of the account at all.
+func runningEntities(d *Data) map[string]bool {
+	if d.GroupBy == "" || len(d.Days) == 0 {
+		return nil
+	}
+	col := statusColumn(d)
+	if col == "" {
+		return nil
+	}
+	last := d.Days[len(d.Days)-1]
+	running := map[string]bool{}
+	for _, r := range d.Raw {
+		if r.Day == last && campaignStates[strings.ToLower(r.Data[col])] {
+			running[r.Data[d.GroupBy]] = true
+		}
+	}
+	return running
+}
+
+// whyNotForecast explains why an entity that is in the file has no forecast.
+func whyNotForecast(d *Data, e string) string {
+	if slicesContainsFold(d.Paused, e) {
+		return "the export says it is switched off, so its next few days are a " +
+			"decision rather than a forecast"
+	}
+	return "nothing it records moved during this period, so there is nothing to forecast for it"
+}
+
+// exclusionLines reports what was stored but not forecast, one line per reason.
+func exclusionLines(d *Data) []string {
+	var idle []string
+	for _, e := range d.Inactive {
+		if !slicesContainsFold(d.Paused, e) {
+			idle = append(idle, e)
+		}
+	}
+	var out []string
+	if len(d.Paused) > 0 {
+		out = append(out, "  switched off in the export, stored but not forecast: "+
+			strings.Join(d.Paused, ", "))
+	}
+	if len(idle) > 0 {
+		out = append(out, "  no activity at all, stored but not forecast: "+
+			strings.Join(idle, ", "))
+	}
+	return out
 }
 
 func slicesContainsFold(list []string, s string) bool {

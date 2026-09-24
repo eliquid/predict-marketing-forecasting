@@ -345,9 +345,8 @@ func cmdForecast(args []string) error {
 				// their own export sends them hunting for a typo that is not there.
 				for _, idle := range data.Inactive {
 					if strings.EqualFold(idle, e) {
-						return fmt.Errorf("-entities: %q is in the file but nothing it "+
-							"records moved during this period, so there is nothing to "+
-							"forecast for it", idle)
+						return fmt.Errorf("-entities: %q is in the file, and stored, but %s",
+							idle, whyNotForecast(data, idle))
 					}
 				}
 				return fmt.Errorf("-entities: no campaign named %q (have: %s)",
@@ -367,8 +366,8 @@ func cmdForecast(args []string) error {
 	if len(fut) > 0 {
 		fmt.Printf("  using known-future: %s\n", strings.Join(sortedKeys(fut), ", "))
 	}
-	if len(data.Inactive) > 0 {
-		fmt.Printf("  no activity at all, not forecast: %s\n", strings.Join(data.Inactive, ", "))
+	for _, line := range exclusionLines(data) {
+		fmt.Println(line)
 	}
 	if len(data.Identifiers) > 0 {
 		fmt.Printf("  not forecast, look like identifiers: %s\n",

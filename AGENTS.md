@@ -34,7 +34,7 @@ published, through the adapter in `models/`.
 ./install.sh                # one-time setup: Python env, build, model weights (~2.5 GB)
                             # sets up chronos2 and timesfm3; chronos2ft needs YOUR data
 go build -o predictmarketing .
-go test ./...               # 165 tests
+go test ./...               # 169 tests
 go vet ./... && gofmt -l .  # must be silent
 ./predictmarketing forecast testdata/example.csv -model chronos2
 ```
@@ -265,12 +265,55 @@ over 262 days arrives as 3,930 rows. That shape drives most of the design.
 | `Campaign ID` and similar | Numeric, but a label. Stored, never forecast — adding fifteen together gives 327,129,489,016. |
 | Rates (CTR, conversion rate) | **Forecast like anything else.** Percentages parse as numbers ("4.20%" -> 4.20, kept as written) and the sign goes back on in the report. What a rate is *not* is addable, so the account figure is the **mean** across campaigns, not the sum. |
 | Settings (budget, bid, target CPA, caps) | **Stored and aggregated, never forecast.** A budget is a dial you turn; forecasting it just replays the number you set — the real file produced seven days of 5877.00. Cost per acquisition is *not* a setting: it is cost divided by conversions, an outcome you measure. |
-| Paused campaigns | Every metric constant, so there is nothing to forecast. Stored, not sent to a model, and **named both in the terminal and in the report** — a campaign that simply vanishes from the page reads as an omission. Asking for one by `-entities` says why rather than "no campaign named". |
+| Paused campaigns | **Stored in full, never forecast, never trained on.** See §2a1. Named both in the terminal and in the report — a campaign that simply vanishes from the page reads as an omission. Asking for one by `-entities` says why rather than "no campaign named". |
 | Every original row | Kept verbatim in the `raw` table. |
 
 The account and the campaigns are forecast **independently**, so their totals
 will not match exactly. On the real file they agree to within 1–4%, which is a
 useful sanity check rather than a guarantee.
+
+## 2a1. Everything is stored; only switched-on campaigns are forecast
+
+These are two separate decisions, and conflating them is the mistake to avoid.
+
+**Storage takes everything.** Every row of the export goes into `raw`, and every
+campaign — enabled, paused, removed, long dead — gets its full daily series in
+`series`, alongside the `(account)` total, which is the sum of *all* of them
+because that is what the account actually spent. Nothing is filtered on the way
+into the database. A campaign that is paused today may be switched back on next
+month, and its history has to already be there when it is.
+
+**Modelling takes only what is switched on.** `runningEntities` (`ingest.go`)
+reads the export's campaign-status column and keeps the campaigns it says are
+enabled *as of the file's last day*. Everything else is put in `d.Paused`, which
+is a subset of `d.Inactive` — stored, named in the output, and never passed to
+TimesFM, Chronos-2 or the fine-tune. `models/finetune.py`'s `running_groups` applies the
+same rule, so the adapter is fitted to exactly the series it will be asked about.
+
+**Why, concretely.** A paused campaign's next seven days are a decision, not a
+forecast: it spends nothing until someone turns it back on. Asking a model anyway
+returns noise hovering around zero, and on a real run `Patches DSA #2 - Zombie`
+(last spend 2025-11-04) came back with quantiles 6.9% out of order, failed
+`checkForecast`, and took the entire second report down with it. The old rule
+only caught series that never moved *at all*, which scales with the window: on
+the same file 9 of 15 campaigns were excluded at 180 days but only 2 at 1,099.
+Status is absolute, so it does not drift with how much history you export.
+
+**Finding the column.** By its values, never its name. A Google Ads export has
+`Campaign status` (Enabled/Paused) *and* `Status` (`Eligible (Limited)`) *and*
+`Status reasons`; matching the word "status" picks the wrong one. A text column
+is believed only when every value in it is a word in `campaignStates`
+(`ingest.go`) / `CAMPAIGN_STATES` (`models/finetune.py`) — **these two lists must stay
+in step.** No such column, and the tool falls back to the never-moved rule alone.
+
+**The dropdowns follow automatically.** The report's campaign dropdown is built
+from `sharedEntities(runs)` — the entities every model actually forecast — not
+from a query over `series`. Paused campaigns are in the database but not in the
+dropdown, which is the intended behaviour: you can only pick something there is a
+forecast for.
+
+Verified on the real 1,099-day, 15-campaign export: 6 campaigns plus `(account)`
+forecast; 9 stored and named as switched off.
 
 ## 2b. What a first run looks like
 
@@ -393,6 +436,20 @@ that is the actual test in the review checklist.
 
 `raw` is replaced per source on re-import, so correcting an export does not leave
 stale rows. Everything else is append-only except `series`, which updates in place.
+
+**Every campaign is in `raw` and `series`, including paused ones** (§2a1). The
+filter is on what gets *modelled*, never on what gets stored.
+
+**Every forecast is kept, not just the one that was drawn.** Each model's run is
+its own row in `runs`, carrying `as_of` (the last day of real data it was given)
+and `model_info`; every predicted day, entity, metric and quantile is a row in
+`forecasts`. So a run on 2026-09-23 stores what TimesFM, Chronos-2 *and* the
+fine-tune each said about 2026-09-24 through 2026-09-30, at full precision,
+before any of it was known. When the next export arrives it lands in `series`,
+and `forecast_accuracy` joins the two on `(series_id, entity, metric, day)` so
+each prediction can be scored against what actually happened — per day, per
+model, per days-ahead. That join is the whole reason the forecast table exists;
+nothing else reads it after the report is written.
 
 The one index that is not a primary key is `forecasts_median`, a partial index on
 `(entity, run_id, metric, day) WHERE quantile = 0.5`. It exists because
@@ -554,6 +611,12 @@ wrong answer that looked right.
   value, because you chose next week's yourself.
 - **Never score a fine-tuned model on days it was trained on.** Filter
   `trained_on = 0`. See §4c.
+- **Store every campaign; model only the switched-on ones.** Nothing is filtered
+  on the way into the database — paused campaigns keep their full history. The
+  status rule applies to the model calls and the fine-tune, and to nothing else.
+  See §2a1. `campaignStates` in `ingest.go` and `CAMPAIGN_STATES` in
+  `models/finetune.py` must agree: training on a campaign the forecaster then
+  refuses to run fits the adapter to series nobody will ever see.
 - **Never derive one metric from another.** Every metric is forecast by the model
   itself. No ratios, no percentages. `multivariate_test.go` proves this with three
   unrelated shapes and a perturbation test. Keep those tests.

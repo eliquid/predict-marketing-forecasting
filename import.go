@@ -140,8 +140,8 @@ func importOne(path, dir, dbPath string, horizon, history int, skipFinetune bool
 	}
 	fmt.Printf("  forecasting: %s\n", strings.Join(data.Names, ", "))
 	fmt.Printf("  for %d: %s\n", len(data.Entities), strings.Join(data.Entities, ", "))
-	if len(data.Inactive) > 0 {
-		fmt.Printf("  no activity at all, not forecast: %s\n", strings.Join(data.Inactive, ", "))
+	for _, line := range exclusionLines(data) {
+		fmt.Println(line)
 	}
 
 	db, err := openDB(dbPath)
