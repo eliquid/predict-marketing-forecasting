@@ -75,10 +75,16 @@ Several things moved, so older notes may mislead:
   `huggingface_hub` already reads `HF_TOKEN` from the environment.
 
 - **The export has to be the right download.** Google Ads: download →
-  **More options**, segmented **daily**, format **`.csv`** and never
-  `.csv (Excel)` —
-  the Excel one is UTF-16 tab-separated despite the name and is refused
-  (`AGENTS.md` §2a0). This is the most common reason a real file will not load.
+  **More options**, segmented **daily**, date range **ending yesterday**, format
+  **`.csv`** and never `.csv (Excel)` — the Excel one is UTF-16 tab-separated
+  despite the name and is refused (`AGENTS.md` §2a0). This is the most common
+  reason a real file will not load.
+- **The range must end on the last full day, never today.** A day still running
+  is a partial day, and nothing here can tell it from a real slump: measured, the
+  same 2026-09-23 read 4,435.52 taken mid-afternoon and 6,378.35 once complete,
+  and forecasting from the partial one put the next 7 days **28% low on both
+  models**. The tool does not check this and cannot — the file does not say when
+  it was produced (`AGENTS.md` §2a0).
 - **`data/` and `pm.db` are anchored to the install**, like `models/` always
   was (`defaultPath`). Never reintroduce a bare relative default: it splits the
   forecast history across databases and `accuracy` silently loses it.

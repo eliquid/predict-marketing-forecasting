@@ -8,9 +8,27 @@ description: Import a fresh ad-platform export, forecast it, and score the forec
 ## Get the right download first
 
 Google Ads, campaigns view: **download → More options**, segmented **daily**,
-format **`.csv`** — **not `.csv (Excel)`**. The Excel one is UTF-16 and
-tab-separated despite its name, and is refused. `AGENTS.md` §2a0 has the
-conversion command if a file has already been downloaded the wrong way.
+date range **ending yesterday**, format **`.csv`** — **not `.csv (Excel)`**. The
+Excel one is UTF-16 and tab-separated despite its name, and is refused.
+`AGENTS.md` §2a0 has the conversion command if a file has already been
+downloaded the wrong way.
+
+**End the range on the last full day of spend — never today.** A day still
+running holds the spend so far, not the spend it will end with, and nothing in
+this tool can tell that from a genuine collapse. Both models lean on the newest
+days, so one partial day at the end drags the whole forecast down: measured, the
+same day read 4,435.52 taken mid-afternoon and 6,378.35 once complete, and
+forecasting from the partial one came out **28% low on both models**.
+
+Check before importing — this is not something the tool does for you:
+
+```bash
+awk -F, 'NR>1{c[$1]+=$10} END{for (d in c) print d, c[d]}' "Campaign report.csv" \
+  | sort | tail -8
+```
+
+A last day far below the ones before it means the export ran too early.
+Re-download it ending on yesterday.
 
 ## The short version
 

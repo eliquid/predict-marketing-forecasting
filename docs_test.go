@@ -557,3 +557,36 @@ func TestPausedCampaignRuleIsDocumented(t *testing.T) {
 		}
 	}
 }
+
+// The export must end on the last full day of spend. A day still running holds
+// the spend so far, not the spend it will end with, and nothing in this tool can
+// tell that from a genuine collapse -- the file does not say when it was
+// produced. Measured on a real account, the same day read 4,435.52 taken
+// mid-afternoon and 6,378.35 once complete, and forecasting from the partial one
+// came out 28% low on both models.
+//
+// It is the most consequential thing a user can get wrong and the tool cannot
+// catch, so every document that tells someone how to download must say it.
+func TestTheDateRangeRuleIsEverywhere(t *testing.T) {
+	for _, f := range []string{
+		"README.md", "AGENTS.md", "CLAUDE.md",
+		".claude/skills/new-export/SKILL.md",
+	} {
+		b, err := os.ReadFile(f)
+		if err != nil {
+			t.Errorf("%s: %v", f, err)
+			continue
+		}
+		text := strings.ToLower(string(b))
+		if !strings.Contains(text, "more options") {
+			continue // this file does not describe the download
+		}
+		if !strings.Contains(text, "yesterday") {
+			t.Errorf("%s explains the Google Ads download but never says the range "+
+				"must end on yesterday", f)
+		}
+		if !strings.Contains(text, "partial") {
+			t.Errorf("%s does not explain why a part-finished day is a problem", f)
+		}
+	}
+}

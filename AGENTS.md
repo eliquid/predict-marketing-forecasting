@@ -531,7 +531,40 @@ the wrong download was taken. What to ask for:
 |---|---|
 | Where | the campaigns view, **download → More options**, not the one-click download |
 | Segment | **daily** — one row per campaign per day. A summary with one row per campaign has no series in it |
+| **Date range** | **must end on yesterday**, the last full day of ad spend. Never include today |
 | Format | **`.csv`**, never **`.csv (Excel)`** |
+
+**The date range is the one that silently corrupts the forecast.** A day still
+in progress is a partial day, and nothing in this tool can tell it from a real
+collapse — `parseCell` sees a smaller number and stores it, the guards check
+shape and finiteness rather than plausibility, and both models weight the newest
+days heavily. One short day at the end therefore moves every forecast after it.
+
+Measured, same calendar day, two downloads of the same account:
+
+| 2026-09-23 | taken mid-afternoon | taken once complete |
+|---|---|---|
+| Cost | 4,435.52 | 6,378.35 |
+| Impr. | 10,957 | 17,723 |
+| Clicks | 839 | 1,332 |
+
+The partial day was 81% of the prior week's median spend, 68% of impressions and
+65% of clicks. Forecasting from it put the next 7 days **28% low on Cost and 37%
+low on impressions**, on both models — they moved together, which is what makes
+it look like a finding rather than an error.
+
+A cheap sanity check before importing, which is also the one `importOne` does
+not do:
+
+```bash
+awk -F, 'NR>1{c[$1]+=$10} END{for (d in c) print d, c[d]}' "Campaign report.csv" \
+  | sort | tail -8
+```
+
+If the last day is far below the ones before it, the export ran too early.
+Re-download ending on yesterday. **The tool does not check this and should not
+be assumed to** — there is no way to distinguish a partial day from a genuine
+one without knowing when the file was produced, which the file does not say.
 
 **The Excel option is not a CSV.** Measured on a real export: it is UTF-16
 little-endian (BOM `ff fe`) and **tab**-separated, despite the `.csv` name. It

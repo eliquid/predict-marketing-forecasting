@@ -206,7 +206,34 @@ The export has to be the right shape, and the default download is not it:
    **More options** — not the one-click download.
 2. Set it to **daily**. You want one row per campaign per day; a summary with
    one row per campaign has no time series in it at all.
-3. Choose **`.csv`** — **not `.csv (Excel)`**.
+3. **End the date range on yesterday** — your last full day of ad spend. Never
+   include today.
+4. Choose **`.csv`** — **not `.csv (Excel)`**.
+
+**Point 3 matters more than any of the others, and it is the easiest to get
+wrong.** A day that is still running is a partial day: it holds the spend so
+far, not the spend that day will end with. The tool cannot tell a partial day
+from a real collapse in performance — it sees the number and believes it — and
+because both models weight the most recent days heavily, that one short day
+drags the whole forecast down.
+
+Measured on a real export downloaded mid-afternoon, against the same day
+re-downloaded once it was complete:
+
+| 2026-09-23 | partial download | complete |
+|---|---|---|
+| Cost | 4,435.52 | **6,378.35** |
+| Impressions | 10,957 | **17,723** |
+| Clicks | 839 | **1,332** |
+
+The partial day was 81% of the previous week's median spend, 68% of its
+impressions and 65% of its clicks — a convincing-looking slump that never
+happened. Forecasting from it put the next seven days **28% too low** on both
+models. Nothing warned about it, because nothing can: a quiet day and a
+half-finished day are the same number.
+
+So: end the range on yesterday. Not today at 9am, not today at 5pm, not "today
+so far". Yesterday.
 
 That last one matters more than it looks. Despite the name, the Excel option is
 **UTF-16 encoded and tab-separated**, so it is not a CSV in any sense the tool
