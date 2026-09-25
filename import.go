@@ -193,7 +193,11 @@ func importOne(path, dir, dbPath string, horizon, history int, skipFinetune, fre
 	if data.RowsPerDay > 1 {
 		fmt.Printf("  %d rows per day, split by %q\n", data.RowsPerDay, data.GroupBy)
 	}
-	fmt.Printf("  forecasting: %s\n", strings.Join(data.Names, ", "))
+	fmt.Printf("  forecasting: %s\n", withConcepts(data, data.Names))
+	if len(data.NotMetrics) > 0 {
+		fmt.Printf("  numeric, but not a metric this forecasts: %s\n",
+			strings.Join(data.NotMetrics, ", "))
+	}
 	fmt.Printf("  for %d: %s\n", len(data.Entities), strings.Join(data.Entities, ", "))
 	for _, line := range exclusionLines(data) {
 		fmt.Println(line)

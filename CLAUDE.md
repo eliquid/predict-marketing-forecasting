@@ -214,6 +214,28 @@ Several things moved, so older notes may mislead:
   dead-campaign failure the paused rule exists to prevent. The flag is a no-op
   on a dense export, measured line for line on a 1,099-day one.
 
+- **What gets forecast is an allow-list now, not a deny-list** (`AGENTS.md` §4b).
+  `wantedMetrics` in `ingest.go` names the concepts — spend, impressions, clicks,
+  conversions, revenue, `cost per`, rate — and anything numeric that matches none
+  of them is stored and **named on screen**, never forecast. The old direction
+  failed open: a platform sends whatever columns it likes, so each unwanted one had
+  to be excluded by name after it leaked, and `Budget name` (blank in all 16,485
+  rows, therefore numeric zeros) escaped only because its name contains "budget".
+  **The table order is load-bearing** — `cost per` before `spend`, `rate` before
+  `clicks`/`conversions`, `revenue` before `conversions` — and matching is on whole
+  words after `normaliseColumn`, never substrings.
+- **The concept carries the aggregation.** A `cost per` or `rate` is averaged
+  across campaigns; everything else sums. This fixed a real error: `Cost per add to
+  cart (USD)` and `Cost per results` were being summed, because `looksLikeRatio`
+  only knew `ctr`/`rate`/`%`/`ratio`/`share`/`avg`.
+- **The allow-list is skipped when `-columns` is given, or when nothing in the file
+  matches it.** The second case keeps a plain `date,v` series working — filtering a
+  file with one number in it refuses the simplest input and buys nothing. Never
+  "fix" that by making the list mandatory.
+- **`looksLikeIdentifier` is not redundant and must not be removed.** It keeps
+  `Campaign ID` out of the sums (fifteen IDs added gave 327,129,489,016) *and* is
+  what lets an ID column qualify as the campaign column at all.
+
 Columns are sorted into forecast / setting / rate / identifier / text by rule
 (`AGENTS.md` §4b). `forecast` prints which rule it applied to each; **`import`
 prints only the `forecasting:` line** and nothing about the columns it set

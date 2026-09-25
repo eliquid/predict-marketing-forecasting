@@ -612,6 +612,42 @@ of your data while still producing a confident-looking forecast:
 
 Fill missing days in your data — a real `0` is fine — rather than leaving them out.
 
+### Which columns get forecast
+
+An export carries whatever columns the platform decided to send, and you cannot
+control that. So the tool forecasts a **known list of marketing metrics** and
+leaves everything else alone:
+
+| It forecasts | Names it recognises |
+|---|---|
+| spend | `Cost`, `Spend`, `Amount spent (USD)`, `Spent` |
+| impressions | `Impressions`, `Impr.`, `Imps`, `Views`, `Reach`, `Plays` |
+| clicks | `Clicks`, `Unique link clicks`, `Taps`, `Visits`, `Sessions` |
+| conversions | `Conversions`, `Purchases`, `Results`, `Leads`, `Installs`, `Add to cart`, `Orders` |
+| revenue | `Revenue`, `Conversion value`, `Purchase value`, `Sales` |
+| cost per action | `CPA`, `CPC`, `CPM`, `CPV`, `Cost per purchase`, `Cost per results` |
+| rates | `CTR`, `CVR`, `ROAS`, `Conversion rate`, anything with `%` |
+
+Case, punctuation and units do not matter: `Impr.`, `impressions` and
+`IMPRESSIONS` are the same thing, and `Amount spent (USD)` is spend.
+
+**Everything else numeric is stored but not forecast, and it is named on screen**
+so you can see it happened:
+
+```
+forecasting: Amount spent (USD) (spend), Impressions, Purchases (conversions)
+numeric, but not a metric this forecasts: Quality score, Days since launch
+```
+
+A cost-per-anything and a rate are **averaged** across campaigns for the account
+figure, never summed — fifteen campaigns' cost per purchase does not add up to the
+account's.
+
+If a metric you want is under a name the list does not know, it will appear in that
+second line. Force it in with `-columns "Your Column"`, which overrides the list
+entirely. A plain two-column file (`date,value`) is never filtered — there is
+nothing to choose between.
+
 ### Blank cells are zero
 
 Where a platform has nothing to report it may leave the cell empty, or write `-`,

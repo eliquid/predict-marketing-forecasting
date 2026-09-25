@@ -1227,8 +1227,64 @@ In order. The first rule that matches wins, and whichever applied is printed.
 | Not numeric | — | stored in `raw`, never forecast |
 | Identifier | last **word** is `id`, `ids` or `code` | stored, never forecast |
 | Setting | contains `budget`, `bid`, `target`, `limit`, `cap` | stored and aggregated, never forecast |
-| Rate | contains `ctr`, `rate`, `%`, `ratio`, `share`, `avg.`, `avg ` or `average` | forecast; **averaged** across campaigns, not summed |
-| Anything else numeric | — | forecast, summed across campaigns |
+| **A wanted metric** | matches `wantedMetrics` | forecast; **summed** across campaigns, or **averaged** if the concept is a rate or a per-unit cost |
+| Anything else numeric | — | stored and named as `numeric, but not a metric this forecasts`, never forecast |
+
+**The last two rows are an allow-list, and that direction is the point.** It used
+to be the other way round: forecast every numeric column unless a rule excluded
+it. That fails open, and an export is not something you control — a platform sends
+the columns it wants to send. Each unwanted one then had to be excluded by name
+*after* it leaked: `Budget`, then `Campaign ID`, then a `Budget name` that was
+blank in all 16,485 rows of a real export and so became a numeric column of
+17,584 stored zeros. It escaped being forecast only because its name happens to
+contain "budget". Failing closed is the only way that ends.
+
+`wantedMetrics` is an ordered table and **the order is load-bearing**:
+
+| Concept | Matched on | Adds up? |
+|---|---|---|
+| `cost per` | `cpa`, `cpc`, `cpm`, `cpv`, `cpl`, `cost per`, `spend per`, `revenue per`, `value per` | **no** |
+| `rate` | `ctr`, `cvr`, `roas`, `rate`, `ratio`, `share`, `percent`, `avg`, `average`, `mean` | **no** |
+| `revenue` | `revenue`, `conversion value`, `purchase value`, `sales`, `turnover` | yes |
+| `conversions` | `conversions`, `conv`, `purchases`, `results`, `leads`, `signups`, `installs`, `add to cart`, `orders`, `actions` | yes |
+| `clicks` | `clicks`, `taps`, `visits`, `sessions` | yes |
+| `impressions` | `impressions`, `impr`, `imps`, `imp`, `views`, `reach`, `plays` | yes |
+| `spend` | `cost`, `spend`, `spent`, `amount` | yes |
+
+`cost per` before `spend`, or every cost-per-something reads as money spent.
+`rate` before `clicks` and `conversions`, or "click-through rate" and "conversion
+rate" become counts. `revenue` before `conversions`, or "conversion value" is
+counted as a number of conversions. `TestMetricConceptOrderIsLoadBearing` pins all
+of it.
+
+**Matching is on whole words, after normalisation** (`normaliseColumn`): lowercased,
+parenthesised qualifiers dropped so `Amount spent (USD)` is `amount spent`,
+punctuation reduced to spaces so `Impr.` is `impr`, then padded with spaces so a
+pattern matches a word and never a fragment. Substring matching is how a rule for
+`imp` would claim `Impact`, and how one for `budget` claims `Budget name`.
+
+**The `addable` column fixed a real error.** `looksLikeRatio` knew only `ctr`,
+`rate`, `%`, `ratio`, `share` and `avg`, so on a real export `Cost per add to cart
+(USD)` and `Cost per results` were **summed** across campaigns — a sum of per-unit
+costs, which is not a number that means anything. The concept now carries the
+aggregation, so any `cost per` is averaged whatever it is called.
+
+**When the allow-list does not apply.** Two cases, both deliberate, both recorded
+in `d.Unfiltered`:
+
+- **`-columns` was given.** The person named the metrics; that outranks a table.
+- **Nothing in the file matched at all.** A plain two-column series (`date,v`,
+  `date,ramp,flat,wave`) names its metric whatever the person liked, and there is
+  nothing to filter in a file with one number in it. Filtering there would refuse
+  the simplest possible input to buy nothing. The list earns its keep on a platform
+  export, which is precisely the file carrying columns nobody asked for.
+
+**A metric you wanted under a name the table does not know is the one real risk**,
+and the safeguard is that it is never silent: both `forecast` and `import` print
+`numeric, but not a metric this forecasts:` with every such column named, and
+`forecasting:` names the concept each kept column matched
+(`Amount spent (USD) (spend)`). Use `-columns` to force one in for a one-off, or
+add the synonym to the table.
 
 **A cell with no data in it is 0, not a failure.** `parseCell`'s `noData` set —
 empty, `-`, `--`, `---`, an en or em dash, `n/a`, `na`, `nan`, `null`, `nil`,

@@ -82,6 +82,15 @@ type Data struct {
 	// target CPA. Stored for the record, never forecast: a forecast of a number
 	// you set yourself tells you nothing.
 	Settings []string
+	// NotMetrics are numeric columns that are not one of the metrics this tool
+	// forecasts (wantedMetrics). Stored, named on screen, never forecast.
+	NotMetrics []string
+	// Concept maps each forecast column to which wanted metric it matched, so the
+	// output can show the reasoning rather than just the verdict.
+	Concept map[string]string
+	// Unfiltered is true when the allow-list was not applied -- either -columns
+	// named the metrics outright, or nothing in the file matched it at all.
+	Unfiltered bool
 	// Percent marks columns written with a % sign, so the report can put it back.
 	Percent map[string]bool
 
@@ -524,8 +533,35 @@ func readCSVFilling(path string, want []string, groupBy string, fillAbsent bool)
 		dayIndex[day] = i
 	}
 
+	// Which numeric columns are metrics this tool forecasts. An explicit -columns
+	// is the user saying so directly, and overrides the allow-list entirely.
+	//
+	// If nothing matches, the allow-list is not applied at all. A plain two-column
+	// series ("date,v") names its metric whatever the person liked, and there is
+	// nothing to filter in a file with one number in it -- filtering there would
+	// refuse the simplest possible input to buy nothing. The list earns its keep on
+	// a platform export, which is exactly the file that has columns nobody asked
+	// for. d.Unfiltered records that this happened so the caller can say so.
+	concept := map[string]string{}
+	notAddable := map[string]bool{}
+	anyWanted := false
+	for c, n := range names {
+		if !numeric[c] || looksLikeIdentifier(n) || looksLikeSetting(n) {
+			continue
+		}
+		if cn, addable, ok := metricConcept(n); ok {
+			concept[n], anyWanted = cn, true
+			if !addable {
+				notAddable[n] = true
+			}
+		}
+	}
+	filter := anyWanted && len(want) == 0
+	d.Unfiltered = !filter
+
 	// Sort the numeric columns into what can be forecast and what cannot.
 	d.Percent = map[string]bool{}
+	d.Concept = map[string]string{}
 	mean := map[string]bool{}
 	usable := make([]int, 0, len(names))
 	// stored is every numeric column kept in the series table, in the same order
@@ -542,14 +578,21 @@ func readCSVFilling(path string, want []string, groupBy string, fillAbsent bool)
 			d.Settings = append(d.Settings, n)
 			stored = append(stored, n)
 			usable = append(usable, c)
+		case filter && concept[n] == "":
+			// Numeric, but not one of the things this tool forecasts. Kept in raw
+			// like everything else, and named on screen -- never dropped quietly,
+			// because a column that silently stops being forecast is exactly the
+			// failure this list exists to end.
+			d.NotMetrics = append(d.NotMetrics, n)
 		default:
 			if pctCol[c] {
 				d.Percent[n] = true
 			}
+			d.Concept[n] = concept[n]
 			// A ratio is a real series and is forecast like any other. What it is
 			// not is addable: fifteen campaigns' click-through rates do not sum to
 			// the account's. Combined as a mean across campaigns instead.
-			if rowsPerDay > 1 && looksLikeRatio(n) {
+			if rowsPerDay > 1 && (notAddable[n] || looksLikeRatio(n)) {
 				mean[n] = true
 				d.Averaged = append(d.Averaged, n)
 			}
@@ -563,9 +606,9 @@ func readCSVFilling(path string, want []string, groupBy string, fillAbsent bool)
 	}
 	if len(d.Names) == 0 {
 		return nil, fmt.Errorf("%s: no column holds numbers that can be forecast "+
-			"(text: %s | identifiers: %s | settings: %s)", path,
+			"(text: %s | identifiers: %s | settings: %s | not metrics: %s)", path,
 			listOr(d.Skipped, "none"), listOr(d.Identifiers, "none"),
-			listOr(d.Settings, "none"))
+			listOr(d.Settings, "none"), listOr(d.NotMetrics, "none"))
 	}
 
 	// Work out which column separates the rows of one day, if any.
@@ -1104,6 +1147,104 @@ func looksLikeIdentifier(name string) bool {
 		return true
 	}
 	return false
+}
+
+// wantedMetrics is the allow-list of things this tool forecasts, in the order it
+// is tested. First match wins, and the order is load-bearing, not cosmetic.
+//
+// Why an allow-list. The old rule was the other way round: forecast every numeric
+// column unless something excluded it. That fails open, and an export is not
+// something you control -- a platform sends the columns it wants to send. Every
+// unwanted column then had to be excluded by name, one rule at a time, and each
+// new platform brought a new leak: `Budget`, then `Campaign ID`, then a
+// `Budget name` that was blank in all 16,485 rows and became a numeric column of
+// zeros. Failing closed is the only way that ends.
+//
+// addable is false for a per-unit cost or a rate. Fifteen campaigns' costs add up
+// to the account's; fifteen campaigns' cost-per-purchase does not. This is not a
+// refinement: `Cost per add to cart (USD)` and `Cost per results` were summed on a
+// real export, because looksLikeRatio knew only "ctr", "rate", "%", "ratio",
+// "share" and "avg", and a sum of per-unit costs is not a number that means
+// anything.
+var wantedMetrics = []struct {
+	concept  string
+	addable  bool
+	patterns []string
+}{
+	// Before "spend", or every cost-per-something reads as spend. Before
+	// "conversions", or "cost per conversion" reads as a conversion count.
+	{"cost per", false, []string{"cpa", "cpc", "cpm", "cpv", "cpl", "cost per",
+		"cost pe", "spend per", "revenue per", "value per"}},
+	// Before "clicks" and "conversions", so "click-through rate" and "conversion
+	// rate" are rates rather than counts.
+	{"rate", false, []string{"ctr", "cvr", "roas", "rate", "ratio", "share",
+		"percent", "avg", "average", "mean"}},
+	// Before "conversions", or "conversion value" is counted as conversions.
+	{"revenue", true, []string{"revenue", "conversion value", "conversions value",
+		"purchase value", "purchases value", "sales", "turnover"}},
+	{"conversions", true, []string{"conversions", "conversion", "conv", "purchases",
+		"purchase", "results", "result", "leads", "lead", "signups", "sign ups",
+		"installs", "install", "registrations", "add to cart", "adds to cart",
+		"orders", "order", "actions", "action"}},
+	{"clicks", true, []string{"clicks", "click", "taps", "tap", "visits", "sessions"}},
+	{"impressions", true, []string{"impressions", "impression", "impr", "imps",
+		"imp", "views", "view", "reach", "plays"}},
+	{"spend", true, []string{"cost", "spend", "spent", "amount"}},
+}
+
+// normaliseColumn reduces a column name to lowercase words so a pattern can be
+// matched on whole words. Everything that is decoration goes: a parenthesised
+// qualifier ("Amount spent (USD)"), a trailing abbreviation dot ("Impr."),
+// punctuation and repeated spaces.
+//
+// Whole words, never substrings, and this matters: a substring rule for "budget"
+// would also claim "Budget name", and one for "imp" would claim "important".
+func normaliseColumn(name string) string {
+	n := strings.ToLower(strings.TrimSpace(name))
+	if i := strings.IndexByte(n, '('); i >= 0 {
+		if j := strings.IndexByte(n[i:], ')'); j >= 0 {
+			n = n[:i] + n[i+j+1:]
+		}
+	}
+	var b strings.Builder
+	for _, r := range n {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+		} else {
+			b.WriteByte(' ')
+		}
+	}
+	return " " + strings.Join(strings.Fields(b.String()), " ") + " "
+}
+
+// metricConcept says which of the wanted metrics a column is, if any. The second
+// result is false when the column is a per-unit cost or a rate, which means it is
+// averaged across campaigns rather than summed.
+func metricConcept(name string) (string, bool, bool) {
+	n := normaliseColumn(name)
+	for _, m := range wantedMetrics {
+		for _, pat := range m.patterns {
+			if strings.Contains(n, " "+pat+" ") {
+				return m.concept, m.addable, true
+			}
+		}
+	}
+	return "", true, false
+}
+
+// withConcepts lists the forecast columns, each with the wanted metric it matched.
+// Saying "Amount spent (USD) (spend)" is what makes the allow-list auditable: the
+// reader can see a column was understood, and which of their metrics it answers.
+func withConcepts(d *Data, metrics []string) string {
+	out := make([]string, len(metrics))
+	for i, m := range metrics {
+		if c := d.Concept[m]; c != "" && !strings.EqualFold(c, m) {
+			out[i] = fmt.Sprintf("%s (%s)", m, c)
+		} else {
+			out[i] = m
+		}
+	}
+	return strings.Join(out, ", ")
 }
 
 // looksLikeRatio spots columns that are a rate rather than a count. They are

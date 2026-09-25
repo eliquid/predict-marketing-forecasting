@@ -1221,3 +1221,154 @@ func TestNoDataSetsAgree(t *testing.T) {
 			goSet, pySet)
 	}
 }
+
+// The allow-list decides what is forecast, and the order it is tested in is
+// load-bearing. "Cost per conversion" contains both "cost" and "conversion", so
+// whichever concept is tested first wins -- and if that were "spend", a per-unit
+// cost would be summed across campaigns as though it were money spent.
+func TestMetricConceptOrderIsLoadBearing(t *testing.T) {
+	for _, c := range []struct {
+		column  string
+		concept string
+		addable bool
+	}{
+		{"Cost", "spend", true},
+		{"Amount spent (USD)", "spend", true},
+		{"Spend", "spend", true},
+		{"Impr.", "impressions", true},
+		{"Impressions", "impressions", true},
+		{"Video views", "impressions", true},
+		{"Clicks", "clicks", true},
+		{"Unique link clicks", "clicks", true},
+		{"Purchases", "conversions", true},
+		{"Website purchases", "conversions", true},
+		{"Results", "conversions", true},
+		{"Revenue", "revenue", true},
+		{"Conversion value", "revenue", true}, // revenue, not a conversion count
+		{"Cost per conversion", "cost per", false},
+		{"Cost per add to cart (USD)", "cost per", false},
+		{"CPA", "cost per", false},
+		{"CPC", "cost per", false},
+		{"Conversion rate", "rate", false}, // rate, not a conversion count
+		{"CTR", "rate", false},
+		{"ROAS", "rate", false},
+	} {
+		got, addable, ok := metricConcept(c.column)
+		if !ok {
+			t.Errorf("%q matched nothing; it is a metric we forecast", c.column)
+			continue
+		}
+		if got != c.concept {
+			t.Errorf("%q = %q, want %q", c.column, got, c.concept)
+		}
+		if addable != c.addable {
+			t.Errorf("%q addable = %v, want %v -- a per-unit cost or rate does not "+
+				"sum across campaigns", c.column, addable, c.addable)
+		}
+	}
+
+	// Patterns match whole words, never substrings. A substring rule for "imp"
+	// would claim "Impact", and one for "order" would claim "Reorder rank".
+	for _, col := range []string{"Impact", "Quality score", "Ad relevance",
+		"Days since launch", "Frequency cap reached"} {
+		if c, _, ok := metricConcept(col); ok {
+			t.Errorf("%q matched %q; it is not one of the metrics we forecast",
+				col, c)
+		}
+	}
+}
+
+// A numeric column nobody asked for is stored and named, never forecast. This is
+// the whole point: an export sends the columns the platform wants to send, and
+// failing open meant each new one had to be excluded by name after it leaked.
+func TestUnwantedNumericColumnsAreNamedNotForecast(t *testing.T) {
+	var b strings.Builder
+	b.WriteString("Day,Campaign,Cost,Clicks,Quality score,Days since launch\n")
+	for i := 0; i < 120; i++ {
+		fmt.Fprintf(&b, "%s,Live,%d,%d,%d,%d\n", day(i), 100+i, 20+i, 7, i)
+		fmt.Fprintf(&b, "%s,Live Two,%d,%d,%d,%d\n", day(i), 60+i, 10+i, 5, i)
+	}
+	d, err := readCSV(writeTemp(t, "extra.csv", b.String()), nil, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.Unfiltered {
+		t.Error("Cost and Clicks matched, so the allow-list must be in force")
+	}
+	for _, want := range []string{"Cost", "Clicks"} {
+		if !slicesContainsFold(d.Names, want) {
+			t.Errorf("%q must be forecast; names = %v", want, d.Names)
+		}
+	}
+	for _, unwanted := range []string{"Quality score", "Days since launch"} {
+		if slicesContainsFold(d.Names, unwanted) {
+			t.Errorf("%q must not be forecast", unwanted)
+		}
+		if !slicesContainsFold(d.NotMetrics, unwanted) {
+			t.Errorf("%q must be named as set aside, not dropped in silence; "+
+				"notMetrics = %v", unwanted, d.NotMetrics)
+		}
+	}
+}
+
+// A plain two-column series names its metric whatever the person liked. Filtering
+// there would refuse the simplest possible input and buy nothing, so when nothing
+// matches the allow-list it is not applied at all.
+func TestAllowListDoesNotApplyWhenNothingMatches(t *testing.T) {
+	var b strings.Builder
+	b.WriteString("date,ramp,flat,wave\n")
+	for i := 0; i < 120; i++ {
+		fmt.Fprintf(&b, "%s,%d,50,%d\n", day(i), i, 40+i%7)
+	}
+	d, err := readCSV(writeTemp(t, "plain.csv", b.String()), nil, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !d.Unfiltered {
+		t.Error("nothing matched, so the allow-list must not have been applied")
+	}
+	if len(d.NotMetrics) != 0 {
+		t.Errorf("nothing may be set aside here; notMetrics = %v", d.NotMetrics)
+	}
+	if !slicesContainsFold(d.Names, "ramp") || !slicesContainsFold(d.Names, "wave") {
+		t.Errorf("every numeric column must still be forecast; names = %v", d.Names)
+	}
+
+	// -columns is the person saying which metrics they want, and overrides it.
+	d2, err := readCSV(writeTemp(t, "plain2.csv", b.String()), []string{"ramp"}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !d2.Unfiltered || len(d2.NotMetrics) != 0 {
+		t.Errorf("-columns must override the allow-list; unfiltered=%v notMetrics=%v",
+			d2.Unfiltered, d2.NotMetrics)
+	}
+}
+
+// Fifteen campaigns' spend adds up to the account's. Fifteen campaigns' cost per
+// purchase does not. This was wrong on a real export: looksLikeRatio knew only
+// "ctr", "rate", "%", "ratio", "share" and "avg", so "Cost per results" was summed
+// and the account figure was not a number that meant anything.
+func TestPerUnitCostIsAveragedNotSummed(t *testing.T) {
+	var b strings.Builder
+	b.WriteString("Day,Campaign,Cost,Cost per purchase\n")
+	for i := 0; i < 120; i++ {
+		fmt.Fprintf(&b, "%s,Live,%d,10\n", day(i), 100+i)
+		fmt.Fprintf(&b, "%s,Live Two,%d,20\n", day(i), 60+i)
+	}
+	d, err := readCSV(writeTemp(t, "cpa.csv", b.String()), nil, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slicesContainsFold(d.Averaged, "Cost per purchase") {
+		t.Fatalf("a per-unit cost must be averaged; averaged = %v", d.Averaged)
+	}
+	if got := d.Values[AccountEntity]["Cost per purchase"][0]; got != 15 {
+		t.Errorf("account cost per purchase = %v, want 15 (the mean of 10 and 20, "+
+			"not the sum)", got)
+	}
+	// Money still adds up.
+	if got := d.Values[AccountEntity]["Cost"][0]; got != 160 {
+		t.Errorf("account Cost = %v, want 160 (100+60)", got)
+	}
+}

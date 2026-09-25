@@ -369,13 +369,17 @@ func cmdForecast(args []string) error {
 		fmt.Printf("  %d rows per day, split by %q (%d rows kept in the raw table)\n",
 			data.RowsPerDay, data.GroupBy, len(data.Raw))
 	}
-	fmt.Printf("  forecasting: %s\n", strings.Join(metrics, ", "))
+	fmt.Printf("  forecasting: %s\n", withConcepts(data, metrics))
 	fmt.Printf("  for %d: %s\n", len(chosen), strings.Join(chosen, ", "))
 	if len(fut) > 0 {
 		fmt.Printf("  using known-future: %s\n", strings.Join(sortedKeys(fut), ", "))
 	}
 	for _, line := range exclusionLines(data) {
 		fmt.Println(line)
+	}
+	if len(data.NotMetrics) > 0 {
+		fmt.Printf("  numeric, but not a metric this forecasts: %s\n",
+			strings.Join(data.NotMetrics, ", "))
 	}
 	if len(data.Identifiers) > 0 {
 		fmt.Printf("  not forecast, look like identifiers: %s\n",
