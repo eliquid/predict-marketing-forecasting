@@ -255,3 +255,72 @@ func TestReimportReplacesTheDatasetRatherThanMerging(t *testing.T) {
 		t.Errorf("re-importing 'acct' changed 'other': %d rows, want 9", n)
 	}
 }
+
+// An import is someone bringing in an account, so it empties the database
+// first: the numbers already there belong to whatever was imported before, and
+// merging two accounts under one roof produces totals that describe nothing.
+//
+// This deliberately discards the forecast record as well. `runs` and
+// `forecasts` are what `accuracy` scores once the actuals arrive, and after a
+// wipe there is nothing left to score -- see AGENTS.md §4a for the trade.
+func TestClearDatabaseEmptiesEveryTable(t *testing.T) {
+	db, err := openDB(filepath.Join(t.TempDir(), "w.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	d := &Data{
+		Days:     []string{"2026-01-01", "2026-01-02"},
+		Names:    []string{"Cost"},
+		Entities: []string{AccountEntity},
+		Values:   map[string]map[string][]float64{AccountEntity: {"Cost": {1, 2}}},
+	}
+	if err := saveData(db, "s", d); err != nil {
+		t.Fatal(err)
+	}
+	if err := saveRaw(db, "s", []RawRow{{Line: 1, Day: "2026-01-01", Data: map[string]string{"x": "y"}}}); err != nil {
+		t.Fatal(err)
+	}
+	run := Run{ID: "r1", SeriesID: "s", Model: "chronos2@90d", Horizon: 1,
+		Metrics: []string{"Cost"}, Entities: []string{AccountEntity},
+		AsOf: "2026-01-02", CreatedAt: time.Now(), InputHash: "h", ModelInfo: []byte(`{}`)}
+	if err := saveRun(db, run, []string{"2026-01-03"}, []float64{0.1, 0.5, 0.9},
+		map[string][][][]float64{AccountEntity: {{{1, 2, 3}}}}); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, tbl := range []string{"series", "raw", "runs", "forecasts"} {
+		var n int
+		if err := db.QueryRow("SELECT COUNT(*) FROM " + tbl).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		if n == 0 {
+			t.Fatalf("%s is empty before the wipe; the test proves nothing", tbl)
+		}
+	}
+
+	if err := clearDatabase(db); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, tbl := range []string{"series", "raw", "runs", "forecasts"} {
+		var n int
+		if err := db.QueryRow("SELECT COUNT(*) FROM " + tbl).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		if n != 0 {
+			t.Errorf("%s still holds %d rows after the wipe", tbl, n)
+		}
+	}
+
+	// The schema has to survive, or the next save fails on a missing table.
+	if err := saveData(db, "s2", d); err != nil {
+		t.Errorf("the database is unusable after a wipe: %v", err)
+	}
+	// And the derived objects too -- accuracy reads the view.
+	var v int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM forecast_accuracy`).Scan(&v); err != nil {
+		t.Errorf("forecast_accuracy did not survive the wipe: %v", err)
+	}
+}

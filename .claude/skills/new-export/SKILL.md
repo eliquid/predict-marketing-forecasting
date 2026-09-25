@@ -25,6 +25,13 @@ where you stand. The `data/` the CSV goes into is the **installation's** one for
 the same reason — copy it somewhere else and `import` will say, with the full
 path, that it found no files.
 
+**`import` empties the database first.** It is the command for bringing in an
+account, so everything already stored — forecasts, runs, history — is deleted
+before the new file is read. The wipe happens after the CSV parses, so a bad
+export cannot destroy your data and give nothing back, and only the first file
+of a batch wipes. If you need a scoreable forecast history, use `forecast` with
+an explicit `-db`, which does not wipe (`AGENTS.md` §4a).
+
 That is the whole job. It forecasts the file **three times** — whole file, last
 270 days, last 90 days — with both pretrained models and **stores all six runs**,
 then writes report 1 showing the actuals and **one forecast line**: `average@90d`,
@@ -123,7 +130,14 @@ next forecast.
    returns every day of it. Only the forecast is absent, and only because
    nothing can be forecast about a campaign that is switched off.
 
-3. **Score the previous forecasts**, now that their days have actuals:
+3. **Score the previous forecasts**, now that their days have actuals.
+
+   **This only works for the `forecast` steps above, not for `import`.**
+   `import` empties the whole database before it stores anything (`AGENTS.md`
+   §4a), so a forecast made by one import is gone by the next — deleted by the
+   very import that brings the actuals to score it against. The steps in this
+   section use `forecast` with an explicit `-db`, which does not wipe, and that
+   is what makes the history below accumulate.
 
    ```bash
    ./predictmarketing accuracy -db ads.db

@@ -105,10 +105,15 @@ func cmdImport(args []string) error {
 	}
 	fmt.Printf("%d file(s) to import from %s/\n\n", len(files), *dir)
 
+	// The first file of a run empties the database; the rest of the batch adds to
+	// it. Dropping several exports in the folder at once is one import of one
+	// account, not several accounts in sequence.
+	fresh := true
 	for _, path := range files {
-		if err := importOne(path, *dir, *dbPath, *horizon, *history, *skipFinetune); err != nil {
+		if err := importOne(path, *dir, *dbPath, *horizon, *history, *skipFinetune, fresh); err != nil {
 			return fmt.Errorf("%s: %w", filepath.Base(path), err)
 		}
+		fresh = false
 	}
 	return nil
 }
@@ -165,7 +170,7 @@ At least 90 days of history is required. A year is better, two years is best.
 `
 
 // importOne is the whole job for a single file.
-func importOne(path, dir, dbPath string, horizon, history int, skipFinetune bool) error {
+func importOne(path, dir, dbPath string, horizon, history int, skipFinetune, fresh bool) error {
 	data, err := readCSV(path, nil, "")
 	if err != nil {
 		// A file below the model floor is also below the import's own, higher
@@ -197,6 +202,24 @@ func importOne(path, dir, dbPath string, horizon, history int, skipFinetune bool
 		return err
 	}
 	defer db.Close()
+
+	// Empty the database before storing anything -- but only now, after the file
+	// has parsed. Wiping first would mean a malformed export destroyed the old
+	// data and gave nothing back for it.
+	if fresh {
+		before, err := storedRuns(db)
+		if err != nil {
+			return err
+		}
+		if err := clearDatabase(db); err != nil {
+			return fmt.Errorf("clearing %s: %w", dbPath, err)
+		}
+		if before > 0 {
+			fmt.Printf("  cleared %d earlier run(s) from %s -- an import starts a fresh account\n",
+				before, filepath.Base(dbPath))
+		}
+	}
+
 	if err := saveData(db, name, data); err != nil {
 		return fmt.Errorf("writing to %s: %w", dbPath, err)
 	}
@@ -314,6 +337,13 @@ func importOne(path, dir, dbPath string, horizon, history int, skipFinetune bool
 	fmt.Printf("  %s was trained on this data, so judge it on days after %s.\n",
 		"chronos2ft", trainedThrough(ft.Run.ModelInfo))
 	return nil
+}
+
+// storedRuns counts what a wipe is about to discard, so the run can say so.
+func storedRuns(db *sql.DB) (int, error) {
+	var n int
+	err := db.QueryRow(`SELECT COUNT(*) FROM runs`).Scan(&n)
+	return n, err
 }
 
 // enoughHistory refuses a file too short to forecast from, and says what would

@@ -57,8 +57,10 @@ Several things moved, so older notes may mislead:
 
 - The tool forecasts **per campaign and at account level** from a single export
   (`AGENTS.md` §2a). Notes describing one series per file predate this.
-- Forecasts are **kept and scored** against the actuals that arrive later
-  (`AGENTS.md` §4a, the `forecast_accuracy` view and the `accuracy` command).
+- Forecasts are stored so they **can** be scored against the actuals that arrive
+  later (`AGENTS.md` §4a, the `forecast_accuracy` view and the `accuracy`
+  command) — but `import` empties the database, so that only works across
+  repeated `forecast` runs, never across imports.
 - There is a **third model**, `chronos2ft` — Chronos-2 with a LoRA adapter trained
   on the user's own data (`AGENTS.md` §4c). It has not beaten the stock model.
   Any accuracy query must filter `trained_on = 0`.
@@ -98,6 +100,12 @@ Several things moved, so older notes may mislead:
   act on such a judgement and neither can the reader, and mid-run it reads as a
   failure. Measured facts about how well the adapter does go in `AGENTS.md` §4c;
   they do not go in the program's output.
+- **`import` empties the whole database first** (`AGENTS.md` §4a) — forecasts,
+  runs, series and raw. An import is a new account. The wipe happens *after* the
+  CSV parses, so a bad export cannot destroy data and give nothing back, and only
+  the first file of a batch wipes. **This means `accuracy` cannot score anything
+  across imports**: the forecast is deleted by the import that brings its
+  actuals. `forecast` does not wipe and is the route to a scoreable history.
 - **Storage replaces, it does not merge.** `saveData` and `saveRaw` both delete
   the whole `series_id`/source before inserting, so `series` and `raw` always
   describe the same file and a re-import — including one for a different account

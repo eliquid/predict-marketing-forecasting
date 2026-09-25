@@ -989,6 +989,32 @@ for both.
 in `derivedObjects` and every existing database picks it up on next open. Adding a
 new derived object means adding it to that slice, not to `schema`.
 
+**`import` empties the database first.** An import is someone bringing in an
+account, and the numbers already stored belong to whatever was there before;
+merging two accounts' histories under one roof produces totals that describe
+nothing. `clearDatabase` deletes `forecasts`, `runs`, `series` and `raw` in that
+order — `forecasts` references `runs` and `foreign_keys` is on — and the schema
+and the derived objects survive.
+
+Two details that are load-bearing:
+
+- **The wipe happens after the CSV parses**, not before. Wiping first would mean
+  a malformed export destroyed the old data and gave nothing back for it.
+- **Only the first file of a run wipes.** Dropping three exports in `data/` at
+  once is one import of one account, not three accounts in sequence.
+
+**This discards the forecast record, and that is the cost.** `runs` and
+`forecasts` are the only evidence of what was predicted *before* the outcome was
+known, and `accuracy` exists to score them once the actuals arrive. After a wipe
+there is nothing left to score, so **`accuracy` cannot measure anything across
+imports** — the forecast made this week is deleted by next week's import, which
+is the very import that brings the actuals to judge it against.
+
+`forecast` does **not** wipe. It replaces `series` and `raw` per dataset and
+appends runs, so a workflow built on that command still accumulates a history
+worth scoring. That is the route to a working `accuracy`, and it is what the
+walk-forward backtest in §9 used.
+
 **Forecasts are kept so they can be scored later.** Each run records `as_of` — the
 last day of real data it was based on, which is not always the day it was run.
 The `forecast_accuracy` view joins a forecast to the actual for the same

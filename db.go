@@ -445,6 +445,33 @@ func saveData(db *sql.DB, seriesID string, d *Data) error {
 	return tx.Commit()
 }
 
+// clearDatabase empties every table, leaving the schema in place.
+//
+// `import` calls this because an import is someone bringing in an account, and
+// the numbers already stored belong to whatever was there before. Merging two
+// accounts' histories under one roof produces totals that describe nothing.
+//
+// It deletes the forecast record too, which is the expensive part: `runs` and
+// `forecasts` are what `accuracy` scores once the actuals arrive, and after a
+// wipe there is nothing left to score. That is a deliberate trade -- see
+// AGENTS.md 4a. `forecast` does not wipe, so a workflow built on that command
+// still accumulates a history worth scoring.
+//
+// Order matters: forecasts references runs, and foreign_keys is on.
+func clearDatabase(db *sql.DB) error {
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for _, t := range []string{"forecasts", "runs", "series", "raw"} {
+		if _, err := tx.Exec("DELETE FROM " + t); err != nil {
+			return fmt.Errorf("clearing %s: %w", t, err)
+		}
+	}
+	return tx.Commit()
+}
+
 // saveRaw stores every input row verbatim, replacing any previous import of the
 // same source so re-importing a corrected export does not leave stale rows behind.
 func saveRaw(db *sql.DB, source string, rows []RawRow) error {
