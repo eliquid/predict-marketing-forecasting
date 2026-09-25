@@ -252,6 +252,23 @@ func parseValue(s string) (float64, error) {
 	return v, err
 }
 
+// noData is every way an export says it has no value for a cell. All of them
+// mean zero, and none of them is an error.
+//
+// A blank is overwhelmingly a day the campaign did not spend, but it also turns
+// up on a day that spent and recorded no conversions, and on a day that recorded
+// conversions against no spend. All three are the same fact: nothing happened, so
+// the number is 0. Reading them any other way cost a real import four of its
+// metrics -- 11 blank cells in 1,392 rows demoted "Unique link clicks" to a text
+// column, and a demoted column simply stops appearing in the forecast.
+//
+// A stray word is still an error, and deliberately: that is a typo or the wrong
+// file, and the line number is worth more than a silent zero.
+var noData = map[string]bool{
+	"": true, "-": true, "--": true, "---": true, "\u2013": true, "\u2014": true,
+	"n/a": true, "na": true, "nan": true, "null": true, "nil": true, "none": true,
+}
+
 func parseCell(s string) (float64, bool, error) {
 	s = strings.TrimSpace(s)
 	// Tolerate currency symbols, thousands separators, percentages and
@@ -260,17 +277,18 @@ func parseCell(s string) (float64, bool, error) {
 	s = strings.Trim(s, "()")
 	pct := strings.HasSuffix(s, "%")
 	s = strings.NewReplacer("$", "", "£", "", "€", "", ",", "", "%", "", " ", "").Replace(s)
-	if s == "" {
-		return 0, pct, fmt.Errorf("empty value")
+	if noData[strings.ToLower(s)] {
+		return 0, pct, nil // no data is 0, not a failure
 	}
 	v, err := strconv.ParseFloat(s, 64)
 	if err != nil {
 		return 0, pct, fmt.Errorf("not a number: %q", s)
 	}
-	// ParseFloat accepts "NaN", "Inf" and "Infinity" without complaint. Neither
-	// survives storage usefully: NaN violates series.value NOT NULL and surfaces
-	// as a raw SQLite constraint error, and Inf is stored silently, then poisons
-	// every sum, chart axis and accuracy average that touches the series.
+	// "NaN" is handled above as no data. Infinity is not: it is a division that
+	// went wrong rather than a measurement that is missing, it is stored silently,
+	// and it then poisons every sum, chart axis and accuracy average that touches
+	// the series. NaN is still checked here because ParseFloat reaches it by other
+	// spellings than the one noData lists.
 	if math.IsNaN(v) || math.IsInf(v, 0) {
 		return 0, pct, fmt.Errorf("not a finite number: %q", s)
 	}

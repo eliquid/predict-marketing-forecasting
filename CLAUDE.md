@@ -137,8 +137,17 @@ Several things moved, so older notes may mislead:
   never moved, *and* stopped (rows ending before the file's last day). Three
   rules, both sides. On the Meta export the forecaster ran 11 campaigns; before
   the third rule the trainer would have fitted 13, two of them dead tails.
+- **No data is 0.** A blank cell, `-`, `--`, an en/em dash, `n/a`, `nan`, `null`,
+  `nil` or `none` parses as zero (`noData` in `ingest.go`). A **word** is still an
+  error with a line number — that is a typo, not a missing measurement — and
+  Infinity is still refused, being a division that went wrong. Before this, blanks
+  counted as broken cells, which demoted the whole column to text; a real export
+  lost **four of its seven metrics** that way and the import looked completely
+  normal, because a demoted column just stops appearing in `forecasting:`.
 - **`num()` in `models/finetune.py` must stay in step with `parseCell`.** They
   diverged in both directions once: NaN trained on, ordinary cells crashing.
+  `NO_DATA` and `noData` must be the same set — `TestNoDataSetsAgree` compares the
+  two literals in the source.
 - **Never put a time limit on training.** A `--budget` wall clock silently cut a
   real run to 1,210 of 2,000 steps and the resulting adapter looked finished in
   every report. Removed everywhere; lower `--steps` instead (`AGENTS.md` §2c).

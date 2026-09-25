@@ -13,6 +13,9 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"regexp"
+	"sort"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -1120,5 +1123,101 @@ func TestFillAbsentHonoursTheNamedColumn(t *testing.T) {
 	// A column that is forecast can never be the label, flag or no flag.
 	if _, err := readCSVFilling(path, nil, "Cost", true); err == nil {
 		t.Error("-by Cost must still be refused: a measurement is not a label")
+	}
+}
+
+// No data is 0. A blank, a dash or a NaN is a cell the platform had no value for
+// -- usually a day with no spend, sometimes a day with spend and no conversions,
+// sometimes the reverse. All three mean nothing happened.
+//
+// Reading them as errors cost a real import four of its metrics: 11 blank cells
+// in 1,392 rows made "Unique link clicks" a text column, and a demoted column
+// just stops appearing in the forecast. A stray word must still be an error,
+// though, or a typo or the wrong file passes silently.
+func TestNoDataParsesAsZero(t *testing.T) {
+	for _, s := range []string{"", " ", "-", "--", "---", "–", "—",
+		"N/A", "n/a", "NA", "NaN", "nan", "null", "NULL", "none", "nil"} {
+		v, _, err := parseCell(s)
+		if err != nil {
+			t.Errorf("parseCell(%q) = %v, want 0 with no error", s, err)
+		}
+		if v != 0 {
+			t.Errorf("parseCell(%q) = %v, want 0", s, v)
+		}
+	}
+	// "$" is not in the list: the currency symbol is decoration, so a cell holding
+	// only one is an empty cell, which is 0 like any other.
+	for _, s := range []string{"abc", "12abc", "Enabled", "1.2.3", "Inf",
+		"Infinity", "-Inf"} {
+		if _, _, err := parseCell(s); err == nil {
+			t.Errorf("parseCell(%q) must stay an error: a stray word is a typo, "+
+				"and infinity is a division that went wrong, not a missing number", s)
+		}
+	}
+}
+
+// A metric column with a few blank cells stays a metric column, so it is still
+// forecast. This is the whole point of the rule above.
+func TestBlankCellsDoNotDemoteAMetricColumn(t *testing.T) {
+	var b strings.Builder
+	b.WriteString("Day,Campaign,Cost,Clicks,Purchases,Indicator\n")
+	for i := 0; i < 120; i++ {
+		clicks, purch := fmt.Sprint(20+i), fmt.Sprint(i%7)
+		if i%37 == 0 { // the platform had nothing to report for these days
+			clicks, purch = "", "-"
+		}
+		fmt.Fprintf(&b, "%s,Live,%d,%s,%s,purchase\n", day(i), 100+i, clicks, purch)
+		fmt.Fprintf(&b, "%s,Live Two,%d,%d,%d,purchase\n", day(i), 60+i, 10+i, i%5)
+	}
+	d, err := readCSV(writeTemp(t, "blanks.csv", b.String()), nil, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"Cost", "Clicks", "Purchases"} {
+		if !slicesContainsFold(d.Names, want) {
+			t.Errorf("%q was demoted out of the forecast; names = %v", want, d.Names)
+		}
+	}
+	if slicesContainsFold(d.Names, "Indicator") {
+		t.Error("a column of words is still text, blanks or not")
+	}
+	if got := d.Values["Live"]["Clicks"][0]; got != 0 {
+		t.Errorf("a blank cell read as %v, want 0", got)
+	}
+}
+
+// ingest.go's noData and finetune.py's NO_DATA are the same set, and have to be.
+// The trainer and the forecaster reading a blank differently means the adapter is
+// fitted to numbers the forecast never sees -- which is how num() and parseCell
+// drifted apart once before, in both directions.
+func TestNoDataSetsAgree(t *testing.T) {
+	pick := func(path, re string) []string {
+		src, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		m := regexp.MustCompile(re).FindStringSubmatch(string(src))
+		if m == nil {
+			t.Fatalf("%s: could not find the no-data set", path)
+		}
+		var out []string
+		for _, q := range regexp.MustCompile(`"((?:[^"\\]|\\.)*)"`).FindAllStringSubmatch(m[1], -1) {
+			s, err := strconv.Unquote(`"` + q[1] + `"`)
+			if err != nil {
+				t.Fatal(err)
+			}
+			out = append(out, s)
+		}
+		sort.Strings(out)
+		return out
+	}
+	goSet := pick("ingest.go", `(?s)var noData = map\[string\]bool\{(.*?)\n\}`)
+	pySet := pick("models/finetune.py", `(?s)NO_DATA = \{(.*?)\}`)
+	if len(goSet) == 0 {
+		t.Fatal("no entries parsed out of ingest.go")
+	}
+	if !reflect.DeepEqual(goSet, pySet) {
+		t.Errorf("noData and NO_DATA have drifted:\n  ingest.go:   %q\n  finetune.py: %q",
+			goSet, pySet)
 	}
 }

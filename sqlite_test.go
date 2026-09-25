@@ -228,12 +228,40 @@ func TestKnownRefusesUnlistedColumn(t *testing.T) {
 	}
 }
 
-// strconv.ParseFloat accepts "NaN", "Inf" and "Infinity". NaN then violates
-// value NOT NULL and surfaces as a raw constraint error; Inf is stored silently
-// and every sum, axis and average downstream is wrong from then on.
+// strconv.ParseFloat accepts "NaN", "Inf" and "Infinity", and none of the three
+// may reach storage: NaN violates value NOT NULL and surfaces as a raw constraint
+// error, and Inf is stored silently, after which every sum, axis and average
+// downstream is wrong.
+//
+// They get there differently. "NaN" is a platform saying it had no value for the
+// cell, so it is read as 0 (parseCell's noData) -- finite, storable, and the same
+// answer a blank gives. Infinity is a division that went wrong rather than a
+// measurement that is missing, and is still refused outright. Either way nothing
+// non-finite is ever stored, which is what this pins.
 func TestNonFiniteCsvValuesRejected(t *testing.T) {
 	dir := t.TempDir()
-	for _, bad := range []string{"NaN", "nan", "Inf", "-Inf", "Infinity", "+inf"} {
+	for _, nan := range []string{"NaN", "nan"} {
+		path := filepath.Join(dir, "n.csv")
+		if err := os.WriteFile(path, []byte(fullLengthCSV(nan)), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		d, err := readCSV(path, nil, "")
+		if err != nil {
+			t.Fatalf("%q must read as 0, not fail: %v", nan, err)
+		}
+		// fullLengthCSV puts the value on row 10 and 100 everywhere else.
+		if got := d.Values[AccountEntity]["Cost"][10]; got != 0 {
+			t.Errorf("%q read as %v, want 0", nan, got)
+		}
+		for name, col := range d.Values[AccountEntity] {
+			for _, v := range col {
+				if math.IsNaN(v) || math.IsInf(v, 0) {
+					t.Fatalf("%q reached storage as %v in %s", nan, v, name)
+				}
+			}
+		}
+	}
+	for _, bad := range []string{"Inf", "-Inf", "Infinity", "+inf"} {
 		path := filepath.Join(dir, "x.csv")
 		if err := os.WriteFile(path, []byte(fullLengthCSV(bad)), 0o644); err != nil {
 			t.Fatal(err)

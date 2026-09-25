@@ -1230,18 +1230,34 @@ In order. The first rule that matches wins, and whichever applied is printed.
 | Rate | contains `ctr`, `rate`, `%`, `ratio`, `share`, `avg.`, `avg ` or `average` | forecast; **averaged** across campaigns, not summed |
 | Anything else numeric | — | forecast, summed across campaigns |
 
-**"Not numeric" is decided by counting, and the count has a threshold.** A column
-is numeric only if *every* cell parses. What happens when some do not depends on
-how many:
+**A cell with no data in it is 0, not a failure.** `parseCell`'s `noData` set —
+empty, `-`, `--`, `---`, an en or em dash, `n/a`, `na`, `nan`, `null`, `nil`,
+`none`, in any case — reads as zero. Usually the campaign did not spend that day;
+sometimes it spent and recorded no conversions, or recorded conversions against no
+spend. All three say nothing happened, so the number is 0. Decoration is stripped
+first, so a cell holding only a currency symbol is empty too.
+
+This was not always so, and the cost of getting it wrong was high and quiet. A
+real export had 11 blank `Unique link clicks` cells in 1,392 rows, and blanks in
+three more columns. Under the old rule they were failures, so **four metric
+columns were demoted to text** — and a demoted column simply stops appearing in
+the `forecasting:` line. The import succeeded, both reports were written, and the
+only sign was three metrics where there had been seven.
+
+**A stray word is still a failure**, and the threshold below decides what kind:
 
 | Cells that fail | What happens |
 |---|---|
-| fewer than one in ten | the import is **refused**, naming the first: `line 2: column 3 (Clicks): not a number: "--"` |
+| fewer than one in ten | the import is **refused**, naming the first: `line 2: column 3 (Clicks): not a number: "abc"` |
 | one in ten or more | the column is silently set aside as text — stored in `raw`, never forecast |
 
+That is what keeps a typo or the wrong file from passing as zeros, while a column
+of words (`Result indicator`, holding `actions:offsite_conversion.fb_pixel_purchase`)
+still lands in the second row and is correctly text.
+
 The denominator is *rows*, not days, so on a real export (15 campaigns over 1,099
-days is 16,485 rows) the second case is out of reach and a handful of `--` or
-empty cells refuses the whole file. It names **one line at a time**: measured on a
+days is 16,485 rows) the second case is out of reach for a handful of bad cells and
+they refuse the whole file. It names **one line at a time**: measured on a
 40-row file with three bad cells, fixing line 2 produced the same error on line 3.
 Fix them all at once, or drop the column from the export.
 
@@ -1354,13 +1370,16 @@ campaign(s): Testing 5, Testing 8 CBO Winners` / `training on 11 series x 116
 days x 3 metrics`.
 
 
-**The trainer refuses what the forecaster refuses.** `num()` in `models/finetune.py`
-mirrors `parseCell`: currency symbols, thousands separators,
-percent signs, spaces and parenthesised negatives all read the same way, and NaN
-and Infinity are rejected rather than accepted. They diverged at first, in both
-directions — `--`, `£10`, `(1,234.00)` and `1 234` killed the trainer with a bare traceback on files the forecaster reads fine, while `NaN` sailed through into the
-training matrix on the one file the forecaster refuses outright. Keep them in
-step: a cell either side rejects is a cell neither should model.
+**The trainer reads a cell exactly as the forecaster does.** `num()` in
+`models/finetune.py` mirrors `parseCell`: currency symbols, thousands separators,
+percent signs, spaces and parenthesised negatives all read the same way; a blank,
+a dash or a `NaN` is **0**; Infinity is refused. `NO_DATA` and `noData` are the
+same set, and `TestNoDataSetsAgree` compares the two literals so they cannot
+drift. They diverged at first, in both directions — `--`, `£10`, `(1,234.00)` and
+`1 234` killed the trainer with a bare traceback on files the forecaster reads
+fine, while `NaN` sailed through into the training matrix on a file the forecaster
+then refused outright. Keep them in step: a cell one side reads as 0 the other
+must not refuse.
 
 **`--horizon` and `--group` are accepted and recorded nowhere.** The registry keeps
 `steps`, `batch_size`, `context_length`, `learning_rate`, `train_series`,
@@ -1607,7 +1626,8 @@ a hypothetical. The ones worth knowing about, because they are easy to reintrodu
 | `forecast_accuracy` filtering on the last column of a primary key | full table scan per query: 1.6s on 2.3M rows |
 | `known()` validating filters against every quantile of every run | 1.16s spent on every `accuracy` call to check one name |
 | `foreign_keys` left at SQLite's default of off | a declared reference enforcing nothing; a forecast could outlive its run |
-| `ParseFloat` accepting "NaN" and "Infinity" | NaN surfaced as a raw NOT NULL constraint error, Inf stored silently and poisoned every sum, axis and average after it |
+| `ParseFloat` accepting "NaN" and "Infinity" | NaN surfaced as a raw NOT NULL constraint error, Inf stored silently and poisoned every sum, axis and average after it. NaN is now read as no data, which is 0; Infinity is still refused |
+| Treating a blank cell as a broken cell | A real export's blanks demoted four metric columns to text, and a demoted column just stops appearing in the `forecasting:` line. `noData` reads them as 0 |
 | Fuzz corpus containing "NaN" and "Inf" fragments | looked like coverage for three rounds; the files were too short to reach value parsing, so it tested nothing |
 | Database left at the default umask | 0644, world-readable spend history |
 | `-db ""` | SQLite opens an anonymous temporary database, so a forecast printed "saved run ... to " and stored nothing |
@@ -1623,6 +1643,7 @@ a hypothetical. The ones worth knowing about, because they are easy to reintrodu
 | `CREATE VIEW / INDEX IF NOT EXISTS` treated as a migration | a stale `forecast_accuracy` made `accuracy` exit 0 reporting "no forecast day has an actual yet" on a database holding 105 scorable rows |
 | `saveData` upserting where `saveRaw` replaces | a narrowing re-import left `series` holding rows the current export disowned, and `forecast_accuracy` scored against them |
 | The trainer parsing cells its own way | `NaN` reached the training matrix on the one file the forecaster refuses, while `--`, `£10` and `(1,234.00)` killed the trainer on files it accepts |
+| The trainer taking its own default columns | `--metrics Cost,Impr.,Clicks --group Campaign` are Google-shaped, so on a real Meta export the trainer exited before training and report 2 was never written. `import` passes the file's own columns now |
 
 None of these were in the models. All were in the surrounding code.
 

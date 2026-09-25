@@ -73,6 +73,12 @@ def running_groups(hdr, data, group_col):
             if r[0] == last and CAMPAIGN_STATES.get(r[col].strip().lower(), False)}
 
 
+# The same set as ingest.go's noData, and it has to stay the same set. A blank,
+# a dash or a NaN is a cell the platform had no value for, which means 0.
+NO_DATA = {"", "-", "--", "---", "\u2013", "\u2014",
+           "n/a", "na", "nan", "null", "nil", "none"}
+
+
 def num(s, where=""):
     """Parse one cell the way ingest.go's parseCell does, and refuse what it
     refuses.
@@ -83,19 +89,18 @@ def num(s, where=""):
     of which the forecaster reads without complaint — killed the trainer with a
     bare ValueError traceback partway through a file.
 
-    The non-finite check matters more. Python's float() accepts "NaN" and
-    "Infinity", and Go explicitly refuses both, so the one file the forecaster
-    will not touch was the one the trainer would happily fit an adapter to, with
-    NaN propagating through every step. Refuse it here too, and say where.
+    A blank, a dash or a NaN is not an error: the platform had no value for that
+    cell, which means nothing happened, which means 0. NO_DATA lists them and Go's
+    noData lists the same ones. Infinity is different -- a division that went
+    wrong, not a measurement that is missing -- and both sides still refuse it.
     """
     raw = s.strip()
     neg = raw.startswith("(") and raw.endswith(")")
     t = raw.strip("()")
     for ch in ("$", "\u00a3", "\u20ac", ",", "%", " "):
         t = t.replace(ch, "")
-    if t == "":
-        sys.exit(f"empty value{where}. Every cell a metric column holds has to be "
-                 f"a number; the forecaster refuses this file too.")
+    if t.lower() in NO_DATA:
+        return 0.0  # no data is 0, the same as ingest.go's noData
     try:
         v = float(t)
     except ValueError:

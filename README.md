@@ -605,12 +605,28 @@ of your data while still producing a confident-looking forecast:
 
 | Refused | Why |
 |---|---|
-| A row that cannot be read | Skipping it leaves a hole the model reads as a real dip |
+| A cell holding a word where a number belongs | Skipping the row leaves a hole the model reads as a real dip, so the file is refused with the line number. A **blank**, a dash or a `NaN` is not this: no data means 0 (see below) |
 | A missing day | Both models treat the series as consecutive, so a gap shifts every forecast date |
 | Fewer than 32 rows | Below one input patch neither model can see a pattern |
 | Uneven rows per day | A day missing a campaign would put a step in the account total that never happened |
 
 Fill missing days in your data — a real `0` is fine — rather than leaving them out.
+
+### Blank cells are zero
+
+Where a platform has nothing to report it may leave the cell empty, or write `-`,
+`--`, `N/A` or `NaN`. All of those are read as **0**, and none of them stops the
+import. Most are days with no spend; some are days that spent and recorded no
+conversions, or recorded conversions against no spend. All of them mean nothing
+happened.
+
+This matters more than it sounds. A blank used to count as a broken cell, which
+turned the whole column into text — and a column that is not a number is not
+forecast, so it quietly vanished from the report. One real export lost four of its
+seven metrics that way, and the run looked completely normal.
+
+A cell with an actual *word* in it is still an error, with the line number, because
+that is a typo or the wrong file rather than a missing measurement.
 
 ### Exports that list a campaign only on the days it ran
 
