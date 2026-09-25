@@ -51,7 +51,7 @@ path, that it found no files.
 
 **`import` empties the database first.** It is the command for bringing in an
 account, so everything already stored — forecasts, runs, history — is deleted
-before the new file is read. The wipe happens after the CSV parses, so a bad
+before the new file is read. The wipe happens after every model has answered, so a refused forecast — or a bad
 export cannot destroy your data and give nothing back, and only the first file
 of a batch wipes. If you need a scoreable forecast history, use `forecast` with
 an explicit `-db`, which does not wipe (`AGENTS.md` §4a).

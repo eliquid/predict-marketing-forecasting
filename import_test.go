@@ -744,7 +744,7 @@ func TestAverageRunIsTheMeanOfEveryQuantile(t *testing.T) {
 		fakeRun("timesfm3@full", entities, metrics, len(days), 200, ""),
 	}
 
-	avg, ok, err := averageRun(db, "s", runs, days, len(days))
+	avg, ok, err := averageRun("s", runs, days, len(days))
 	if err != nil || !ok {
 		t.Fatalf("averageRun: ok=%v err=%v", ok, err)
 	}
@@ -764,8 +764,21 @@ func TestAverageRunIsTheMeanOfEveryQuantile(t *testing.T) {
 		}
 	}
 
-	// And it is really in the database, where accuracy will find it.
+	// averageRun computes and writes nothing -- that is what lets a failing model
+	// leave the database untouched. Storing is a separate step.
 	var n int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM forecasts f JOIN runs r ON r.id=f.run_id
+	                       WHERE r.model=?`, averageLabel).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Errorf("averageRun wrote %d rows; it must not write at all", n)
+	}
+
+	// And once stored deliberately, accuracy can find it.
+	if err := storeRun(db, avg, days); err != nil {
+		t.Fatal(err)
+	}
 	if err := db.QueryRow(`SELECT COUNT(*) FROM forecasts f JOIN runs r ON r.id=f.run_id
 	                       WHERE r.model=?`, averageLabel).Scan(&n); err != nil {
 		t.Fatal(err)
@@ -790,10 +803,10 @@ func TestAverageRunRefusesMismatchedQuantiles(t *testing.T) {
 	odd := fakeRun("other@full", e, m, 2, 200, "")
 	odd.Shake.Quantiles = []float64{0.05, 0.5, 0.95} // a different grid
 
-	if _, ok, err := averageRun(db, "s", []forecastRun{a, odd}, []string{"d1", "d2"}, 2); err != nil || ok {
+	if _, ok, err := averageRun("s", []forecastRun{a, odd}, []string{"d1", "d2"}, 2); err != nil || ok {
 		t.Errorf("one usable run is not an average: ok=%v err=%v", ok, err)
 	}
-	if _, ok, err := averageRun(db, "s", []forecastRun{a}, []string{"d1", "d2"}, 2); err != nil || ok {
+	if _, ok, err := averageRun("s", []forecastRun{a}, []string{"d1", "d2"}, 2); err != nil || ok {
 		t.Errorf("a single run is not an average: ok=%v err=%v", ok, err)
 	}
 }
@@ -971,5 +984,77 @@ func TestReversePoints(t *testing.T) {
 	}
 	if got := reversePoints(""); got != "" {
 		t.Errorf("empty = %q", got)
+	}
+}
+
+// Nothing is destroyed until every model has answered.
+//
+// `import` empties the database before storing, and for an hour it did so
+// *before* running the models -- so a model that refused halfway left the user
+// with their old forecasts gone, a partial set of new ones and no report.
+// Measured at the time: worse than before they ran the command. forecastModel
+// and storeRun are split so the whole job is computed first and committed once.
+func TestForecastingWritesNothing(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "s.db")
+	db, err := openDB(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	entities := []string{AccountEntity, "Brand"}
+	metrics := []string{"Cost"}
+	days := []string{"2026-03-11", "2026-03-12"}
+
+	// A forecast that exists only in memory leaves no trace.
+	r := fakeRun("chronos2@90d", entities, metrics, len(days), 100, "")
+	var n int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM runs`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Fatalf("the database starts with %d runs; the test proves nothing", n)
+	}
+
+	// Averaging is also read-only.
+	r2 := fakeRun("timesfm3@90d", entities, metrics, len(days), 200, "")
+	avg, ok, err := averageRun("s", []forecastRun{r, r2}, days, len(days))
+	if err != nil || !ok {
+		t.Fatalf("averageRun: ok=%v err=%v", ok, err)
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM runs`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Errorf("averaging wrote %d runs; forecasting must not touch the database", n)
+	}
+
+	// Only storeRun writes.
+	for _, run := range []forecastRun{r, r2, avg} {
+		if err := storeRun(db, run, days); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM runs`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 3 {
+		t.Errorf("stored %d runs, want 3", n)
+	}
+}
+
+// A failed model must be attributable to its window. The same model runs over
+// three of them, and "timesfm3 refused" does not say which one.
+func TestAFailedModelNamesItsWindow(t *testing.T) {
+	_, err := forecastModel("nosuchmodel", runLabel("nosuchmodel", "270d"), "s",
+		&Data{Days: []string{"2026-01-01"}, Names: []string{"Cost"},
+			Entities: []string{AccountEntity},
+			Values:   map[string]map[string][]float64{AccountEntity: {"Cost": {1}}}},
+		[]string{"2026-01-02"}, 1)
+	if err == nil {
+		t.Fatal("an unknown model must fail")
+	}
+	if !strings.Contains(err.Error(), "nosuchmodel@270d") {
+		t.Errorf("the error should name the window, got: %v", err)
 	}
 }

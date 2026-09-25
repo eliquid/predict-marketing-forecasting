@@ -109,9 +109,10 @@ Several things moved, so older notes may mislead:
   failure. Measured facts about how well the adapter does go in `AGENTS.md` §4c;
   they do not go in the program's output.
 - **`import` empties the whole database first** (`AGENTS.md` §4a) — forecasts,
-  runs, series and raw. An import is a new account. The wipe happens *after* the
-  CSV parses, so a bad export cannot destroy data and give nothing back, and only
-  the first file of a batch wipes. **This means `accuracy` cannot score anything
+  runs, series and raw. An import is a new account. The wipe happens *after every model has
+  answered* — `forecastModel` writes nothing, `storeRun` writes what was already
+  computed — so a model that refuses leaves the database untouched rather than
+  emptied. Only the first file of a batch wipes. **This means `accuracy` cannot score anything
   across imports**: the forecast is deleted by the import that brings its
   actuals. `forecast` does not wipe and is the route to a scoreable history.
 - **Storage replaces, it does not merge.** `saveData` and `saveRaw` both delete

@@ -29,26 +29,30 @@ Three things it does not say, and one it says misleadingly:
   `model, entity:` prefix (with the CSV's filename in front of that); in
   `forecast` it is the bare `entity:` prefix. A message with no prefix came from
   somewhere that lost it.
-- **It does not say which window.** `import` forecasts the file three times —
-  `full`, `270d`, `90d` (`AGENTS.md` §2c) — but `runModel` names the model by its
-  bare name, not its `chronos2@90d` run label, so the message is the same from
-  any of them. The last `  270d window (270 days)` line printed above it is what
-  tells you. The same entity can be refused in one window and fine in another:
-  the shorter the window, the less of the campaign's live history it contains.
+- **It names the window.** `import` forecasts the file three times — `full`,
+  `270d`, `90d` (`AGENTS.md` §2c) — and `forecastModel` reports the run label, so
+  the message reads `timesfm3@270d, Brand: ...` and says which one failed. The
+  same entity can be refused in one window and fine in another: the shorter the
+  window, the less of the campaign's live history it contains.
 - **Nothing is stored for the failed run.** A failed forecast fails the whole
   run, so there is no half-written row to clean up.
 - **"quantiles are badly out of order" blames the forecast**, and the forecast is
   not always what is wrong. See cause 3.
 
-**What a refusal inside `import` costs you now.** `import` empties the whole
-database — `forecasts`, `runs`, `series`, `raw` — before the first model runs,
-and report 1 is written only after every window *and* the average have finished
-(`AGENTS.md` §2c). So a refusal leaves: the old database **gone**, this export's
-`series` and `raw` stored, some window runs stored, and **no report at all**.
-Report 1 is never already on disk when a model refuses; the only page that can
-survive is one from an earlier import, which is now stale beside an emptied
-database. Diagnose with `forecast -db /tmp/d.db` (which wipes nothing) and only
-re-run `import` once the cause is fixed.
+**What a refusal inside `import` costs you: nothing but time.** `import` empties
+the database before storing, but only *after* every model has answered —
+`forecastModel` writes nothing and `storeRun` writes what was already computed
+(`AGENTS.md` §2c). A refusal therefore aborts before the wipe and leaves the
+database exactly as it was, verified at 5 runs / 6,615 forecasts / 7,360 series
+rows either side of a deliberately broken worker.
+
+What you do *not* get is a report: report 1 is written after every window and the
+average have finished, so a refusal in any of them means no new page. The one on
+disk is whatever the last successful import wrote, and it is still consistent
+with the database, because neither changed.
+
+Diagnose with `forecast -db /tmp/d.db`, which wipes nothing either, and re-run
+`import` once the cause is fixed.
 
 ## Cause 1 — the entity has nothing to forecast
 

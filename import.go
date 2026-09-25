@@ -206,27 +206,6 @@ func importOne(path, dir, dbPath string, horizon, history int, skipFinetune, fre
 	// Empty the database before storing anything -- but only now, after the file
 	// has parsed. Wiping first would mean a malformed export destroyed the old
 	// data and gave nothing back for it.
-	if fresh {
-		before, err := storedRuns(db)
-		if err != nil {
-			return err
-		}
-		if err := clearDatabase(db); err != nil {
-			return fmt.Errorf("clearing %s: %w", dbPath, err)
-		}
-		if before > 0 {
-			fmt.Printf("  cleared %d earlier run(s) from %s -- an import starts a fresh account\n",
-				before, filepath.Base(dbPath))
-		}
-	}
-
-	if err := saveData(db, name, data); err != nil {
-		return fmt.Errorf("writing to %s: %w", dbPath, err)
-	}
-	if err := saveRaw(db, name, data.Raw); err != nil {
-		return fmt.Errorf("writing raw rows to %s: %w", dbPath, err)
-	}
-
 	days, err := nextDays(data.Days[len(data.Days)-1], horizon)
 	if err != nil {
 		return err
@@ -251,7 +230,7 @@ func importOne(path, dir, dbPath string, horizon, history int, skipFinetune, fre
 		fmt.Printf("\n  %s window (%d days)\n", w.label, len(slice.Days))
 		for _, model := range []string{"chronos2", "timesfm3"} {
 			fmt.Printf("    running %s\n", model)
-			r, err := runModel(db, model, runLabel(model, w.label), name, slice, days, horizon)
+			r, err := forecastModel(model, runLabel(model, w.label), name, slice, days, horizon)
 			if err != nil {
 				return err
 			}
@@ -270,7 +249,7 @@ func importOne(path, dir, dbPath string, horizon, history int, skipFinetune, fre
 	if len(source) == 0 {
 		source = byWindow["full"]
 	}
-	avg, ok, err := averageRun(db, name, source, days, horizon)
+	avg, ok, err := averageRun(name, source, days, horizon)
 	if err != nil {
 		return err
 	}
@@ -280,6 +259,34 @@ func importOne(path, dir, dbPath string, horizon, history int, skipFinetune, fre
 	}
 	fmt.Printf("\n  %s: the mean of %s\n", averageLabel, strings.Join(labelsOf(source), " and "))
 	runs = append(runs, avg)
+
+	// Everything answered. Only now is anything destroyed or written: the wipe,
+	// the history, and every run in one go. Up to here a failure has cost the
+	// user nothing but time.
+	if fresh {
+		before, err := storedRuns(db)
+		if err != nil {
+			return err
+		}
+		if err := clearDatabase(db); err != nil {
+			return fmt.Errorf("clearing %s: %w", dbPath, err)
+		}
+		if before > 0 {
+			fmt.Printf("  cleared %d earlier run(s) from %s -- an import starts a fresh account\n",
+				before, filepath.Base(dbPath))
+		}
+	}
+	if err := saveData(db, name, data); err != nil {
+		return fmt.Errorf("writing to %s: %w", dbPath, err)
+	}
+	if err := saveRaw(db, name, data.Raw); err != nil {
+		return fmt.Errorf("writing raw rows to %s: %w", dbPath, err)
+	}
+	for _, r := range runs {
+		if err := storeRun(db, r, days); err != nil {
+			return fmt.Errorf("storing %s: %w", r.Run.Model, err)
+		}
+	}
 
 	// Every window is kept in the database so `accuracy` can score them, but only
 	// the average is drawn: the individual model lines answer a question the
@@ -321,10 +328,13 @@ func importOne(path, dir, dbPath string, horizon, history int, skipFinetune, fre
 	// The fine-tune is given the whole file, not the 90-day window: it is the one
 	// model that learns from the data rather than reading it, and more of it is
 	// what training has to work with. `data` here is the full read.
-	ft, err := runModel(db, "chronos2ft", runLabel("chronos2ft", "full"), name, data, days, horizon)
+	ft, err := forecastModel("chronos2ft", runLabel("chronos2ft", "full"), name, data, days, horizon)
 	if err != nil {
 		fmt.Printf("\n  the fine-tuned model would not run: %v\n", err)
 		return nil
+	}
+	if err := storeRun(db, ft, days); err != nil {
+		return err
 	}
 	runs = append(runs, ft)
 	drawn = append(drawn, ft)
@@ -372,12 +382,21 @@ func historyVerdict(n int) string {
 }
 
 // runModel forecasts every entity with one model and stores the run.
-func runModel(db *sql.DB, model, label, series string, data *Data, days []string,
+// forecastModel asks one model for one window and returns the answer. It writes
+// nothing.
+//
+// The split from storeRun is what makes `import` safe to fail. The import
+// empties the database before it stores anything, so if a model refused after
+// that wipe the user was left with their old forecasts gone, a partial set of
+// new ones and no report -- measured, worse than before they ran the command.
+// Every model is asked first, and only once all of them have answered is
+// anything destroyed or written.
+func forecastModel(model, label, series string, data *Data, days []string,
 	horizon int) (forecastRun, error) {
 
 	w, err := startWorker(model)
 	if err != nil {
-		return forecastRun{}, fmt.Errorf("%s: %w", model, err)
+		return forecastRun{}, fmt.Errorf("%s: %w", label, err)
 	}
 	defer w.Close()
 
@@ -390,7 +409,9 @@ func runModel(db *sql.DB, model, label, series string, data *Data, days []string
 		q, err := w.Forecast(rows, data.Names, horizon, w.Shake.Quantiles,
 			data.Values[entity], nil)
 		if err != nil {
-			return forecastRun{}, fmt.Errorf("%s, %s: %w", model, entity, err)
+			// The label, not the bare model name: the same model runs over
+			// three windows, and "timesfm3 refused" does not say which.
+			return forecastRun{}, fmt.Errorf("%s, %s: %w", label, entity, err)
 		}
 		forecasts[entity] = q
 	}
@@ -402,10 +423,12 @@ func runModel(db *sql.DB, model, label, series string, data *Data, days []string
 		InputHash: hashInput(data.Days, data.Entities, data.Names, data.Values),
 		ModelInfo: w.Raw,
 	}
-	if err := saveRun(db, run, days, w.Shake.Quantiles, forecasts); err != nil {
-		return forecastRun{}, err
-	}
 	return forecastRun{Run: run, Shake: w.Shake, Values: forecasts}, nil
+}
+
+// storeRun writes a forecast that has already been made.
+func storeRun(db *sql.DB, r forecastRun, days []string) error {
+	return saveRun(db, r.Run, days, r.Shake.Quantiles, r.Values)
 }
 
 // lastDays returns the same dataset trimmed to its final n days.
@@ -445,7 +468,7 @@ func lastDays(d *Data, n int) *Data {
 // by position: averaging a q0.1 with a q0.05 would produce a number that belongs
 // to neither. If fewer than two runs remain there is nothing to average and the
 // caller gets no run back.
-func averageRun(db *sql.DB, series string, runs []forecastRun, days []string,
+func averageRun(series string, runs []forecastRun, days []string,
 	horizon int) (forecastRun, bool, error) {
 
 	if len(runs) < 2 {
@@ -507,9 +530,6 @@ func averageRun(db *sql.DB, series string, runs []forecastRun, days []string,
 		Metrics: first.Run.Metrics, Entities: first.Run.Entities,
 		GroupBy: first.Run.GroupBy, AsOf: first.Run.AsOf, CreatedAt: time.Now(),
 		InputHash: first.Run.InputHash, ModelInfo: info,
-	}
-	if err := saveRun(db, run, days, grid, mean); err != nil {
-		return forecastRun{}, false, err
 	}
 	return forecastRun{Run: run, Shake: Handshake{Quantiles: grid}, Values: mean}, true, nil
 }

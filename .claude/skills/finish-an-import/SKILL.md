@@ -10,8 +10,9 @@ do when it stops partway. Read §2c first — the step order below is its order,
 the reason the CSV moves before training rather than after is there.
 
 **Read this before you re-run anything.** `import` **empties the whole database**
-— `forecasts`, `runs`, `series`, `raw` — on the first file of a batch, once that
-file has parsed (`clearDatabase`, called from `importOne`). An import is a fresh
+— `forecasts`, `runs`, `series`, `raw` — on the first file of a batch, once every
+model has answered (`clearDatabase`, called from `importOne` after the
+forecasting, not before). An import is a fresh
 account, not an addition. So "re-run `import` to finish it" is now "**throw away
 every forecast in the file and start over**", including the forecasts of datasets
 that have nothing to do with this import. It prints what it destroyed —
@@ -52,20 +53,21 @@ window half finished.
 
 | What you see | Where it stopped | What to do |
 |---|---|---|
-| CSV still in `data/`, no run for it | before or during the first window model | start over (see below) |
-| CSV still in `data/`, some window runs, no `average@90d` | part way through the windows | start over (see below) |
-| CSV still in `data/`, `average@90d` present, report 1 written | between writing report 1 and `fileAway` | move the CSV to `data/imported/` by hand, then finish the fine-tune below |
+| CSV still in `data/`, database unchanged from the last completed import | anywhere in the forecasting — every window, or the average | start over (see below); nothing was stored and nothing was lost |
+| CSV still in `data/`, this export's runs present, report 1 written | between writing report 1 and `fileAway` | move the CSV to `data/imported/` by hand, then finish the fine-tune below |
 | CSV in `imported/`, only `_models.html` | at or after the fine-tune | finish the fine-tune, below |
 | CSV in `imported/`, both reports | it finished | nothing |
 
 A run row exists only once a model has finished every entity, so a model that is
-half done leaves nothing. Rows in `series` and `raw` are written **before** any
-model runs, so history in the database is not evidence that a forecast happened.
+half done leaves nothing. And `series`, `raw` and every run are written in one
+pass **after** the forecasting, so an interruption during a model leaves the
+database exactly as the previous import left it — history in it is evidence of
+the *last completed* import, never of this one.
 
 ## If the CSV is still in `data/`
 
-There is nothing to salvage and nothing to undo: re-running `import` wipes the
-database first, so the partial runs from the first attempt go with it. Put the
+There is nothing to salvage and nothing to undo: an interrupted import stored
+nothing, and re-running wipes whatever the last completed import left. Put the
 CSV back in `data/` if it is not there, and run it again.
 
 ```bash
@@ -75,6 +77,11 @@ CSV back in `data/` if it is not there, and run it again.
 What this costs is stated above: every forecast for every series, not just the
 half-written ones. If the database holds anything you still want scored, copy it
 somewhere first and re-run against a scratch file with `-db`.
+
+There is no partially-stored state to find. Runs are written in one pass after
+every model has answered, so either this export's runs are all there or none of
+them are. A database holding some windows but no `average@90d` cannot be produced
+by an interrupted import; if you see one, it came from `forecast`.
 
 There is no "extra `runs` row" to clean up after a re-run any more — the wipe
 handles it. The delete below is only for a duplicate you made yourself with

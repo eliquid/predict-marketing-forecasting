@@ -79,7 +79,7 @@ when given.
 | Read every new CSV in `data/` | `pendingFiles`, creates the folder and a note if absent |
 | Refuse under **90 days**; 365 better, 730 best | `enoughHistory` / `historyVerdict` |
 | Empty the database — but only for the first file of the run, and only once the CSV has parsed | `storedRuns`, then `clearDatabase` (§4a) |
-| Forecast each model over every entity, **once per window** | `importWindows`, `lastDays`, `runModel` |
+| Forecast each model over every entity, **once per window**, writing nothing | `importWindows`, `lastDays`, `forecastModel` |
 | Store the mean of the 90-day runs as a run of its own | `averageRun` |
 | Report 1 into `data/reports/`: the average line alone | `reportPath`, then `writeComparison` |
 | Move the CSV to `data/imported/` | `fileAway`, never overwrites |
@@ -1078,8 +1078,19 @@ and the derived objects survive.
 
 Two details that are load-bearing:
 
-- **The wipe happens after the CSV parses**, not before. Wiping first would mean
-  a malformed export destroyed the old data and gave nothing back for it.
+- **The wipe happens after every model has answered**, not before. `forecastModel`
+  returns a forecast and writes nothing; `storeRun` writes one that has already
+  been made. `importOne` therefore computes the whole job — every window, both
+  models, the average — and only then empties the database and stores it, in one
+  pass.
+
+  This was not the first shape. The wipe originally sat after the CSV parsed but
+  before any model ran, which protected against a malformed file and nothing
+  else. Measured with a deliberately broken worker: the old forecasts were gone,
+  one orphaned model run had replaced them, and no report was written — strictly
+  worse than not running the command. Now the same failure leaves the database
+  byte-for-byte unchanged, verified at 5 runs / 6,615 forecasts / 7,360 series
+  rows before and after.
 - **Only the first file of a run wipes.** Dropping three exports in `data/` at
   once is one import of one account, not three accounts in sequence.
 
@@ -1571,7 +1582,7 @@ available: `import -no-finetune` then `report` on `examples/05-campaigns.csv`
 produce byte-identical pages — measured, `diff` is empty. That file has no rate
 column, so it does not exercise the `%` limit; a fixture that does would.
 
-**`import.go`'s orchestration is 0.0% covered** — `importOne`, `runModel`,
+**`import.go`'s orchestration is 0.0% covered** — `importOne`, `forecastModel`,
 `trainFinetune`, `defaultPath` — while the units around it are covered.
 
 **`TestDefaultsAnchorToTheInstallNotTheShell` never runs.** It skips under `go test`,
