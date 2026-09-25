@@ -1323,28 +1323,36 @@ is gone from the output. Whether the adapter actually helps is a question for
 Facts about how well it does belong in these docs, where someone is reading
 deliberately — never printed at a user who is waiting for a run to finish.
 
-**Its two defaults are Google-Ads-shaped, and `import` overrides neither.**
-`trainFinetune` runs `models/finetune.py <csv> --steps 2000` and nothing else, so
-`--metrics Cost,Impr.,Clicks` and `--group Campaign` stand. Only
-`examples/05-campaigns.csv` carries those column names. On any other export the two
-defaults fail in opposite ways:
+**Its two defaults are Google-Ads-shaped, and `trainFinetune` overrides both.**
+`models/finetune.py` defaults to `--metrics Cost,Impr.,Clicks --group Campaign`,
+which only `examples/05-campaigns.csv` carries. `import` passes the metric and
+group columns **the file it just read actually has** (`data.Names`,
+`data.GroupBy`), so the trainer is fitted to the same columns and the same
+campaigns the forecaster ran.
 
-| The file | What happens |
+It did not always. When it passed nothing, the defaults failed in opposite ways:
+
+| The file | What happened |
 |---|---|
-| has the metrics under other names (`Impressions`, `Spend`) | the trainer exits before training: `columns not in <file>: ['Impr.']`, and lists what the file does have |
-| has no `Campaign` column, or calls it `Campaign name` | **it trains, on one series.** Every row collapses into `(account)`, `running_groups` returns `None`, and the only sign of it is the leading `training on 1 series x N days x 3 metrics` |
+| has the metrics under other names (`Impressions`, `Spend`) | the trainer exited before training: `columns not in <file>: ['Impr.']`, listing what the file does have. A real Meta export failed exactly this way, and that is how the bug was found |
+| has no `Campaign` column, or calls it `Campaign name` | **it trained, on one series.** Every row collapsed into `(account)`, `running_groups` returned `None`, and the only sign was the leading `training on 1 series x N days x 3 metrics` |
 
-The second is the dangerous one: it succeeds, it registers, and `train_series: 1` in
-`models/finetuned.json` is the only record. Read that field before believing a
-fine-tune covered the campaigns. This is reachable from a shipped example —
-`examples/03-platform-export.csv` clears the 90-day gate and then fails on `Impr.`.
-`import` recovers correctly (report 1 stands) but the command it prints is the one
-that just failed; add the flags by hand:
+The second was the dangerous one: it succeeded, it registered, and
+`train_series: 1` in `models/finetuned.json` was the only record. That field is
+still worth reading before believing a fine-tune covered the campaigns — running
+the trainer **by hand** still gets the old defaults, so pass the flags yourself.
+`import` now prints them in the command it suggests when a fine-tune fails.
 
-```bash
-models/.venv/bin/python models/finetune.py data/imported/FILE.csv \
-  --steps 2000 --metrics "Cost,Impressions,Clicks" --group Campaign
-```
+**`load_series` skips the same campaigns the forecaster does**, and has to. It
+already dropped the switched-off ones (`running_groups`) and the ones that never
+moved; it also drops a campaign whose **rows stop before the file's last day**,
+which is how a ragged export says a campaign stopped (§2a2). Without that the two
+sides disagree: on the Meta export the forecaster ran 11 campaigns while the
+trainer would have spent 2,000 steps fitting 13, two of them dead tails of zeros.
+Measured after the fix: `not training on 2 switched-off, stopped or never-active
+campaign(s): Testing 5, Testing 8 CBO Winners` / `training on 11 series x 116
+days x 3 metrics`.
+
 
 **The trainer refuses what the forecaster refuses.** `num()` in `models/finetune.py`
 mirrors `parseCell`: currency symbols, thousands separators,

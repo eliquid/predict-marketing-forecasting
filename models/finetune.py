@@ -139,16 +139,32 @@ def load_series(csv_path, metrics, group_col):
             total[k][di[r[0]]] += v
 
     running = running_groups(hdr, data, group_col) if group_col else None
+
+    # A campaign whose rows stop before the file does has stopped running. Some
+    # exports say so with a status column, which running_groups reads; one that
+    # lists a campaign only on the days it ran says it by leaving the rows out.
+    # Either way the forecaster will not be asked about it (ingest.go's d.Stopped),
+    # so fitting the adapter to its tail of zeros spends steps on a series nobody
+    # will ever see. The two sides have to agree about this or training and
+    # forecasting are about different campaigns.
+    stopped = set()
+    if group_col and group_col in ix:
+        last_seen = {}
+        for r in data:
+            k = r[ix[group_col]]
+            if r[0] > last_seen.get(k, ""):
+                last_seen[k] = r[0]
+        stopped = {k for k, d in last_seen.items() if d < days[-1]}
     out, skipped = [("(account)", total.astype("float32"))], []
     for k, m in per.items():
         if k == "(account)":
             continue
-        if m.sum() <= 0 or (running is not None and k not in running):
+        if m.sum() <= 0 or k in stopped or (running is not None and k not in running):
             skipped.append(k)
             continue
         out.append((k, m.astype("float32")))
     if skipped:
-        print(f"not training on {len(skipped)} switched-off or never-active "
+        print(f"not training on {len(skipped)} switched-off, stopped or never-active "
               f"campaign(s): {', '.join(sorted(skipped))}")
     return out, days
 

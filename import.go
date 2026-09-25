@@ -320,10 +320,12 @@ func importOne(path, dir, dbPath string, horizon, history int, skipFinetune, fre
 
 	fmt.Printf("\n  training %s on this file, which takes a few minutes.\n", "chronos2ft")
 	fmt.Printf("  Report 1 is already written -- open it while this runs.\n")
-	if err := trainFinetune(moved); err != nil {
+	if err := trainFinetune(moved, data.Names, data.GroupBy); err != nil {
 		fmt.Printf("\n  the fine-tune did not finish: %v\n", err)
 		fmt.Printf("  report 1 is unaffected. Train it later with:\n")
-		fmt.Printf("    models/.venv/bin/python models/finetune.py %q\n", moved)
+		fmt.Printf("    models/.venv/bin/python models/finetune.py %q \\\n", moved)
+		fmt.Printf("        --metrics %q --group %q\n",
+			strings.Join(data.Names, ","), data.GroupBy)
 		return nil
 	}
 
@@ -545,7 +547,13 @@ func labelsOf(runs []forecastRun) []string {
 }
 
 // trainFinetune runs the trainer the same way the documentation tells you to.
-func trainFinetune(csv string) error {
+//
+// The metric and group columns come from the file that was just read, never from
+// the trainer's own defaults. Those defaults are Google-Ads-shaped ("Cost",
+// "Impr.", "Clicks", "Campaign"), and on any other export they either stop the
+// trainer with "columns not in <file>" -- which is how this was found -- or, with
+// no matching group column, silently train on one collapsed series.
+func trainFinetune(csv string, metrics []string, groupBy string) error {
 	root := installDir()
 	if root == "" {
 		return fmt.Errorf("cannot find the models folder")
@@ -561,8 +569,14 @@ func trainFinetune(csv string) error {
 	// No time limit. Training runs the steps it was given; a wall clock that cut
 	// it short would leave an adapter that is undertrained but indistinguishable
 	// from a finished one in every report that used it.
-	cmd := exec.Command(python, filepath.Join(root, "models", "finetune.py"), abs,
-		"--steps", "2000")
+	args := []string{filepath.Join(root, "models", "finetune.py"), abs, "--steps", "2000"}
+	if len(metrics) > 0 {
+		args = append(args, "--metrics", strings.Join(metrics, ","))
+	}
+	if groupBy != "" {
+		args = append(args, "--group", groupBy)
+	}
+	cmd := exec.Command(python, args...)
 	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
 	cmd.Env = append(os.Environ(), "PYTHONDONTWRITEBYTECODE=1")
 	return cmd.Run()

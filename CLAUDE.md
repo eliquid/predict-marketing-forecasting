@@ -125,6 +125,18 @@ Several things moved, so older notes may mislead:
   compared and rebuilt on every open, so changing one needs no `schemaVersion`
   bump — and putting a new one back in `schema` behind `IF NOT EXISTS` reinstates
   a bug where a stale view answered queries wrongly instead of failing.
+- **`import` tells the trainer which columns the file has.** `finetune.py`'s
+  defaults (`Cost,Impr.,Clicks`, `Campaign`) are Google-Ads-shaped and only
+  `examples/05-campaigns.csv` carries them; `trainFinetune` passes `data.Names`
+  and `data.GroupBy` instead. A real Meta export is what found this — the trainer
+  stopped with `columns not in <file>: ['Impr.']` and report 2 never got written.
+  The defaults still apply when you run the trainer **by hand**, where the silent
+  failure is the bad one: no matching group column means `training on 1 series`,
+  everything collapsed into `(account)` (`AGENTS.md` §4c).
+- **`load_series` must skip exactly what the forecaster skips** — switched off,
+  never moved, *and* stopped (rows ending before the file's last day). Three
+  rules, both sides. On the Meta export the forecaster ran 11 campaigns; before
+  the third rule the trainer would have fitted 13, two of them dead tails.
 - **`num()` in `models/finetune.py` must stay in step with `parseCell`.** They
   diverged in both directions once: NaN trained on, ordinary cells crashing.
 - **Never put a time limit on training.** A `--budget` wall clock silently cut a

@@ -29,14 +29,15 @@ the adapter's numbers:
   (`AGENTS.md` §4c), so a weaker, leakier opinion is kept out of the ensemble.
   Report 2 is where it appears, as a line of its own.
 
-`import` runs `finetune.py <csv> --steps 2000` and passes nothing else, so
-`--metrics Cost,Impr.,Clicks` and `--group Campaign` stand — and those names are
-Google-Ads-shaped. On an export that calls its columns something else the trainer
-either exits before training (`columns not in <file>: ['Impr.']`) or, worse, if
-there is no `Campaign` column it **trains happily on one series**, everything
-collapsed into `(account)`. `train_series: 1` in `models/finetuned.json` is the
-only record that happened. Read that field before believing a fine-tune covered
-the campaigns, and retrain by hand with the right flags (`AGENTS.md` §4c).
+`import` passes the trainer the metric and group columns **of the file it just
+read**, so it fits the same columns and the same campaigns the forecaster ran.
+The trainer's own defaults (`--metrics Cost,Impr.,Clicks --group Campaign`) are
+Google-Ads-shaped and apply only when you run it **by hand** — pass the flags
+yourself then, or on any other export it either exits with
+`columns not in <file>: ['Impr.']` or, with no matching group column, **trains
+happily on one series**, everything collapsed into `(account)`. `train_series: 1`
+in `models/finetuned.json` is the only record that happened; read that field
+before believing a fine-tune covered the campaigns (`AGENTS.md` §4c).
 
 ## Train
 

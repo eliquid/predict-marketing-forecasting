@@ -107,10 +107,11 @@ Finish it in three steps instead.
 
 1. **Train, passing what `import` would have passed.** The command `import`
    prints on a failed fine-tune is incomplete — it omits `--steps`, and
-   `finetune.py`'s own default is 1000 where `import` passes 2000. It also never
-   passes `--metrics` or `--group`, which is the usual reason the fine-tune
-   failed in the first place (`AGENTS.md` §2c). Read the metric and group names
-   out of the import's own output, or out of the database:
+   `finetune.py`'s own defaults are 1000 steps, `Cost,Impr.,Clicks` and
+   `Campaign` — all three wrong here. `import` passes 2000 and the file's real
+   columns, but running the trainer by hand does not, so supply them. The
+   command `import` prints when a fine-tune fails already carries them; otherwise
+   read them out of the import's output or out of the database:
 
    ```bash
    sqlite3 pm.db "SELECT metrics, group_by FROM runs
@@ -118,6 +119,8 @@ Finish it in three steps instead.
 
    models/.venv/bin/python models/finetune.py "data/imported/<file>.csv" \
        --steps 2000 --metrics "Cost,Impr.,Clicks" --group "Campaign"
+   # ...substituting the names that query returned, which on a non-Google
+   # export are nothing like these.
    ```
 
    Check its first two printed lines say the series and metric counts you expect.
