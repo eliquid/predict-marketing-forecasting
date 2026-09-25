@@ -26,23 +26,32 @@ the same reason — copy it somewhere else and `import` will say, with the full
 path, that it found no files.
 
 That is the whole job. It forecasts the file **three times** — whole file, last
-270 days, last 90 days — with both pretrained models, stores `average@models` as
-the mean of those runs, and writes report 1 with all of them on one chart. Then
-it files the CSV into `data/imported/`, trains `chronos2ft` on the full history
-and writes report 2 with that added. Reports go to `data/reports/`.
+270 days, last 90 days — with both pretrained models and **stores all six runs**,
+then writes report 1 showing the actuals and **one forecast line**: `average@90d`,
+the mean of the two 90-day runs. It files the CSV into `data/imported/`, trains
+`chronos2ft` on the **whole file**, and writes report 2 with that line added.
+Reports go to `data/reports/`.
+
+```
+  full window (400 days)
+  270d window (270 days)
+  90d window (90 days)
+  average@90d: the mean of chronos2@90d and timesfm3@90d
+```
 
 A window longer than the file is **skipped and announced**, not an error, so a
-short export still produces everything it can:
+short export still produces everything it can. On a file of exactly 90 days the
+90d window is skipped as a duplicate of the whole file and the average falls back
+to `full`, which is the last 90 days there.
 
-```
-  full window (100 days)
-  skipping the 270d window: the file has 100 days
-  90d window (90 days)
-  average@models: the mean of the 4 runs above
-```
+**Why only one line.** A walk-forward backtest over 31 daily origins had the
+90-day window beating the whole file and 270 days at all 16 horizons, and the
+average beating both individual models at account level. The other five runs are
+in the database for `accuracy` to score — they are just not what the report
+recommends. See `AGENTS.md` §2c.
 
 At least 90 days is required; 365 is better, 730 best. All three windows need
-**271** days. See `AGENTS.md` §2c.
+**271** days.
 
 The steps below are the manual equivalent, for when you want one model, one
 metric, or a horizon the import does not use.

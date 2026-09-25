@@ -114,6 +114,11 @@ Several things moved, so older notes may mislead:
 - **Never put the chart readout inside the scroller.** It scrolls away with the
   content and shows nothing, and a synthetic mousemove in a test will not catch
   it — check it in a browser.
+- **The comparison chart shades q10-q90 behind each drawn line**, inside the
+  series group so the legend hides both together. It deliberately had no bands
+  while it drew six lines — six translucent bands are unreadable — and that
+  rationale expired when the report went down to one or two (`AGENTS.md` §2c).
+  Nine quantiles were always stored; only the median was ever drawn.
 - **The comparison chart is fixed-width inside a scroller, not scaled to fit** —
   for **legibility**, not for the crosshair. `fromEvent` already divides by the
   viewBox-to-rect ratio, so the crosshair survives any uniform scaling (measured
@@ -123,10 +128,18 @@ Several things moved, so older notes may mislead:
   two comparison reports out, CSV filed into `data/imported/`. It refuses under
   90 days. `forecast` is still the single-model command underneath it.
 - **Every import forecasts three windows** — whole file, last 270 days, last 90 —
-  with both pretrained models, plus `average@models`, the mean of them
-  (`AGENTS.md` §2c). A window longer than the file, or exactly as long as it, is
-  **skipped and announced**, never an error; below 90 days nothing runs and the
-  message names the 90-day gate, not the 32-day model floor.
+  with both pretrained models, and **stores all six**. Only `average@90d`, the
+  mean of the two 90-day runs, is **drawn** (`AGENTS.md` §2c). Report 1 is
+  actuals + the average; report 2 adds `chronos2ft@full`. A window longer than
+  the file, or exactly as long as it, is **skipped and announced**, never an
+  error; below 90 days nothing runs and the message names the 90-day gate, not
+  the 32-day model floor.
+- **The average is the 90-day window, not all of them.** A walk-forward backtest
+  over 31 origins had the 90-day window beating the whole file and 270 days at
+  **all 16 horizons** across both levels, by ~1.7 points — about 2.5x the gap
+  between the two models. On a file of exactly 90 days the 90d window is skipped
+  as a duplicate, so the average falls back to `full`, which is the last 90 days
+  there.
 - **The window is in the stored model name** (`chronos2@90d`), because `accuracy`
   groups by that column and the point is to learn which history length forecasts
   best. `runLabel` builds it; the worker is started by the bare name.
@@ -134,9 +147,10 @@ Several things moved, so older notes may mislead:
   lists stay as the whole file decided them, or a short window could classify a
   campaign differently and `writeComparison`'s intersection would silently drop
   it from every chart.
-- **`average@models` excludes `chronos2ft`** and any run with a different
-  quantile grid. Trained on the data it would be averaged into, and it has not
-  beaten stock (`AGENTS.md` §4c).
+- **`average@90d` excludes `chronos2ft`** and any run with a different quantile
+  grid. Trained on the data it would be averaged into, and it has not beaten
+  stock (`AGENTS.md` §4c). The fine-tune gets the **whole file**, never the
+  90-day window — it learns from the data rather than reading it.
 - **`report` redraws the pages from stored runs** (`rerender.go`, `AGENTS.md`
   §2c). It reads only: no CSV, no forecast, no retrain, no write to the
   database. Use it when you have changed how a chart is drawn — re-importing to

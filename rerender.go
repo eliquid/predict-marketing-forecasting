@@ -100,12 +100,34 @@ func rerenderSeries(db *sql.DB, name, dir string, history int) error {
 		return err
 	}
 
+	// Draw what `import` draws, or a redraw silently disagrees with the page it
+	// replaces. Every window run is stored so `accuracy` can score it, but the
+	// reports show the average and, on the second, the fine-tune (AGENTS.md 2c).
+	//
+	// A database written before the average existed has none, so fall back to
+	// every pretrained run rather than producing an empty page.
 	var pretrained, all []forecastRun
 	for _, r := range runs {
 		all = append(all, r)
 		if trainedThrough(r.Run.ModelInfo) == "" {
 			pretrained = append(pretrained, r)
 		}
+	}
+	var avg []forecastRun
+	for _, r := range pretrained {
+		if r.Run.Model == averageLabel {
+			avg = append(avg, r)
+		}
+	}
+	if len(avg) > 0 {
+		pretrained = avg
+		withFinetune := append([]forecastRun{}, avg...)
+		for _, r := range all {
+			if trainedThrough(r.Run.ModelInfo) != "" {
+				withFinetune = append(withFinetune, r)
+			}
+		}
+		all = withFinetune
 	}
 
 	reports := []struct {

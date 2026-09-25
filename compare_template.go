@@ -143,11 +143,14 @@ var compareTmpl = template.Must(template.New("compare").Parse(`<!doctype html>
   </div>
 
   <p class="lede">
-    {{len .Models}} models forecast the same {{.Horizon}} days from the same
-    history. The last day of real data is <b>{{.AsOf}}</b>; everything to the
-    right of the divider is predicted, not observed. Where the lines separate,
-    the models disagree — that gap is the honest measure of how sure any of this
-    is.
+    {{if gt (len .Models) 1}}{{len .Models}} models forecast{{else}}One line
+    forecasts{{end}} the next {{.Horizon}} days. The last day of real data is
+    <b>{{.AsOf}}</b>; everything to the right of the divider is predicted, not
+    observed. The shaded band is the q10&ndash;q90 range: the models put nine
+    times in ten inside it, and the line through the middle is the median.
+    {{if gt (len .Models) 1}}Where the lines separate, they disagree — that gap
+    is the honest measure of how sure any of this is.{{else}}The wider the band,
+    the less sure the forecast.{{end}}
   </p>
 
   {{if .Excluded}}

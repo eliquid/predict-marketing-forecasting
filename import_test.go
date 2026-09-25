@@ -834,3 +834,142 @@ func TestTheModelColumnFitsEveryLabel(t *testing.T) {
 		t.Errorf("labels now reach %d characters -- widen the model column past 16", longest)
 	}
 }
+
+// The average is always the last 90 days, whatever the file's length -- measured
+// over 31 walk-forward origins, a 90-day window beat both the whole file and 270
+// days at every horizon. The individual windows are still stored so `accuracy`
+// can score them; they are simply not drawn.
+func TestTheAverageIsAlwaysTheNinetyDayWindow(t *testing.T) {
+	if averageWindow != "90d" {
+		t.Fatalf("averageWindow = %q, want the 90-day window", averageWindow)
+	}
+	if !strings.Contains(averageLabel, "90") {
+		t.Errorf("averageLabel %q should name the window it is built from", averageLabel)
+	}
+	// The window it names has to be one the import actually runs.
+	found := false
+	for _, w := range importWindows {
+		if w.label == averageWindow {
+			found = true
+			if w.days != importMinDays {
+				t.Errorf("the %q window is %d days but the import minimum is %d",
+					w.label, w.days, importMinDays)
+			}
+		}
+	}
+	if !found {
+		t.Errorf("averageWindow %q is not in importWindows", averageWindow)
+	}
+}
+
+// A file of exactly 90 days skips the 90d window as a duplicate of the whole
+// file, so there would be no 90-day runs to average. `full` is the last 90 days
+// there, and the average has to fall back to it or the import produces no line
+// at all on the one file length that is exactly the documented minimum.
+func TestTheAverageFallsBackToFullOnAnExactlyMinimumFile(t *testing.T) {
+	for _, days := range []int{importMinDays, importMinDays + 1, 400} {
+		var ran []string
+		for _, w := range importWindows {
+			if w.days > days || (w.days > 0 && w.days == days) {
+				continue
+			}
+			ran = append(ran, w.label)
+		}
+		// Which window the average would be built from, mirroring importOne.
+		src := averageWindow
+		if !slicesContainsFold(ran, averageWindow) {
+			src = "full"
+		}
+		if !slicesContainsFold(ran, src) {
+			t.Errorf("%d days: the average would be built from %q, which did not run (ran %v)",
+				days, src, ran)
+		}
+		if days == importMinDays && src != "full" {
+			t.Errorf("%d days: expected the fallback to full, got %q", days, src)
+		}
+		if days > importMinDays && src != averageWindow {
+			t.Errorf("%d days: expected the %s window, got %q", days, averageWindow, src)
+		}
+	}
+}
+
+// The q10-q90 band. The comparison page drew none for as long as it carried six
+// model lines, where six overlapping bands really are unreadable. It draws one
+// or two now, so the interval the models actually returned is legible and worth
+// having -- the nine quantiles were always stored, just never rendered.
+func TestTheComparisonChartDrawsTheUncertaintyBand(t *testing.T) {
+	entities := []string{AccountEntity, "Brand"}
+	metrics := []string{"Cost"}
+	data, days := comparisonFixture(t, entities, metrics)
+	runs := []forecastRun{fakeRun("average@90d", entities, metrics, len(days), 100, "")}
+
+	path := filepath.Join(t.TempDir(), "band.html")
+	if err := writeComparison(path, runs, data, days, 90); err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	page := string(b)
+
+	// One band per pane, translucent, and inside the series group so hiding the
+	// line hides its band too.
+	if n := strings.Count(page, "fill-opacity="); n != len(entities)*len(metrics) {
+		t.Errorf("%d bands, want one per pane (%d)", n, len(entities)*len(metrics))
+	}
+	if !strings.Contains(page, "<polygon fill=") {
+		t.Error("the band is not drawn as a filled polygon")
+	}
+	for _, op := range regexp.MustCompile(`fill-opacity="([0-9.]+)"`).FindAllStringSubmatch(page, -1) {
+		v, _ := strconv.ParseFloat(op[1], 64)
+		if v <= 0 || v >= 1 {
+			t.Errorf("fill-opacity %v is not translucent", v)
+		}
+	}
+	// The band must be inside the group the legend toggles, before the median so
+	// the line sits on top of it.
+	gi := strings.Index(page, `<g class="series" data-model="average@90d">`)
+	if gi < 0 {
+		t.Fatal("no series group for the average")
+	}
+	grp := page[gi:]
+	if end := strings.Index(grp, "</g>"); end > 0 {
+		grp = grp[:end]
+	}
+	poly := strings.Index(grp, "<polygon")
+	line := strings.Index(grp, "<polyline")
+	if poly < 0 || line < 0 || poly > line {
+		t.Error("the band must be drawn inside the series group, before the median line")
+	}
+
+	// A model that returned a single quantile has no interval to draw.
+	flat := fakeRun("solo@90d", entities, metrics, len(days), 100, "")
+	for e := range flat.Values {
+		for mi := range flat.Values[e] {
+			for di := range flat.Values[e][mi] {
+				flat.Values[e][mi][di] = flat.Values[e][mi][di][:1]
+			}
+		}
+	}
+	flat.Shake.Quantiles = []float64{0.5}
+	p2 := filepath.Join(t.TempDir(), "noband.html")
+	if err := writeComparison(p2, []forecastRun{flat}, data, days, 90); err != nil {
+		t.Fatal(err)
+	}
+	b2, _ := os.ReadFile(p2)
+	if strings.Contains(string(b2), "fill-opacity=") {
+		t.Error("a single-quantile forecast has no band to draw")
+	}
+}
+
+// reversePoints closes the band polygon; if it stopped reversing, the shape
+// would cross itself into a bow-tie instead of a filled ribbon.
+func TestReversePoints(t *testing.T) {
+	if got := reversePoints("1,2 3,4 5,6"); got != "5,6 3,4 1,2" {
+		t.Errorf("reversePoints = %q", got)
+	}
+	if got := reversePoints(""); got != "" {
+		t.Errorf("empty = %q", got)
+	}
+}

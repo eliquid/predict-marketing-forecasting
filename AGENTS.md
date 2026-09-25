@@ -125,8 +125,8 @@ gone. Do not reintroduce a time limit in any form: if training is too slow, lowe
 ### Three windows, one chart
 
 Every import forecasts the same file three times — the **whole file**, its **last
-270 days** and its **last 90 days** — with both pretrained models, and draws all
-of them on one set of axes.
+270 days** and its **last 90 days** — with both pretrained models. All six runs
+are **stored**; only their **90-day average** is **drawn**.
 
 | Window | Runs when | Stored as |
 |---|---|---|
@@ -134,16 +134,44 @@ of them on one set of axes.
 | `270d` | the file has **more than** 270 days | `chronos2@270d`, `timesfm3@270d` |
 | `90d` | the file has **more than** 90 days | `chronos2@90d`, `timesfm3@90d` |
 
-Plus `average@models`, the arithmetic mean of whichever of those ran, and on
-report 2 `chronos2ft@full` — the fine-tune is trained on the whole file only,
-because training it once already costs the longest part of an import.
+**What each report draws:**
 
-**Why.** One model on one history is a single opinion. The same model on three
-histories shows whether that opinion depends on how far back you look. Measured
-on a real 1,099-day export, the six lines landed within 2.6% of each other — but
-on the same export with a **partial final day**, they sat 28% lower. Where the
-lines agree you can believe them; where they separate, the spread is the honest
-measure of confidence, and a lone line hides both.
+| Report | Lines |
+|---|---|
+| 1 | actuals + `average@90d` |
+| 2 | actuals + `average@90d` + `chronos2ft@full` |
+
+`average@90d` is the mean of `chronos2@90d` and `timesfm3@90d`, per entity,
+metric, day and quantile. The fine-tune is given the **whole file** — it is the
+one model that learns from the data rather than reading it, and more of it is
+what training has to work with.
+
+**Why the 90-day window, and why only the average.** Measured by a walk-forward
+backtest over **31 daily origins** (2026-08-24 to 2026-09-23), each forecasting 7
+days blind on a real account:
+
+| | account level | all entities |
+|---|---|---|
+| 90-day window | **17.40%** | **32.53%** |
+| whole file | 18.88% | 33.91% |
+| 270 days | 19.14% | 34.36% |
+
+The 90-day window won **every one of 7 horizons at both levels** — 16 of 16 — by
+about 1.7 points of mean absolute error. Choosing the *window* was worth roughly
+2.5x more than choosing the *model* (0.70 points between the best and worst
+model, pooled across windows). 270 days was the worst of the three, so this is
+not a smooth "recent is better" gradient: it is that the last ~90 days are the
+regime this account is actually in.
+
+The average was the best single line at account level (17.33%, beating both
+models), so it is what the report recommends. The individual model lines answer a
+question the report is not asking, and six of them crowd out the one line that is
+the recommendation — so they are kept in the database and left off the page.
+
+**They are still stored.** All six window runs go into `runs`/`forecasts` under
+`chronos2@90d`, `timesfm3@270d` and so on, because `accuracy` groups by that
+column and re-running that comparison on real future days is how the choice above
+gets re-tested rather than taken on faith.
 
 **A window longer than the file is skipped, never refused.** A 100-day export
 produces `full` and `90d` and says so. A window exactly as long as the file *is*
@@ -169,12 +197,18 @@ stay as the whole file decided them. Otherwise a shorter window could classify a
 campaign differently, and `writeComparison` intersects entities across runs, so
 that campaign would vanish from the chart without a word.
 
-**`average@models` excludes `chronos2ft`.** The fine-tune is fitted to the same
-data it would be averaged into and has not beaten the stock models (§4c), so
-including it would let a weaker, leakier opinion pull the ensemble. It also
-excludes any run declaring a different quantile grid: averaging a q0.1 with a
-q0.05 produces a number belonging to neither. Below two usable runs there is no
-average at all.
+**`average@90d` is built from the 90-day window only**, and excludes
+`chronos2ft`. The fine-tune is fitted to the same data it would be averaged into
+and has not beaten the stock models (§4c), so including it would let a weaker,
+leakier opinion pull the ensemble. It also excludes any run declaring a different
+quantile grid: averaging a q0.1 with a q0.05 produces a number belonging to
+neither.
+
+**On a file of exactly 90 days the average falls back to `full`.** The 90d window
+is skipped there as a duplicate of the whole file, so there would be no 90-day
+runs to average — and `full` *is* the last 90 days in that case. Without the
+fallback the one file length that is exactly the documented minimum would produce
+no line at all. `TestTheAverageFallsBackToFullOnAnExactlyMinimumFile` pins it.
 
 **Why two reports.** The third model has to be trained on the user's own data
 first, which takes as long as it takes. Report 1 is written and the CSV filed away
@@ -210,10 +244,21 @@ earlier import is never cleaned up, so check its timestamp too.
 
 **The comparison report** (`compare.go`, `compare_template.go`) is separate from
 the single-model report in `report.go`, because it answers a different question:
-not "what does this model say" but "do the models agree". Every model's median is
-drawn on one set of axes over the same history. There are no uncertainty bands —
-three overlapping translucent bands are unreadable, and agreement is what the
-page is for.
+not "what does this model say" but "do the models agree". Every drawn line's
+median goes on one set of axes over the same history, **with its q10-q90 range
+shaded behind it** at 13% opacity, inside the same group so the legend hides a
+line and its band together.
+
+The band was deliberately absent for most of this project's life, and the reason
+was good at the time: the page drew six model lines, and six overlapping
+translucent bands are unreadable. It draws one or two now (2c), so the interval
+is legible — and it was always in the database, since every worker returns nine
+quantiles and only the median was ever rendered. A model that declares a single
+quantile gets no band rather than a degenerate one.
+
+The lede adapts: one line describes the band, several describe the disagreement
+between them. Saying "1 models forecast ... where the lines separate" is how that
+copy read for an hour after the report went down to a single line.
 
 Every (entity, metric) pane is rendered into the page and all but one hidden; two
 dropdowns swap them with a few lines of plain JavaScript. Not htmx, which needs a

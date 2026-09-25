@@ -72,7 +72,14 @@ var importWindows = []struct {
 // It deliberately excludes chronos2ft. The fine-tune is fitted to the same data
 // it would be averaged into, and it has not beaten the stock models (AGENTS.md
 // 4c), so including it would let a weaker, leakier opinion pull the ensemble.
-const averageLabel = "average@models"
+const averageLabel = "average@90d"
+
+// averageWindow is the window the average is built from. Measured over 31
+// walk-forward origins on a real account, a 90-day window beat both the whole
+// file and 270 days at every one of 7 horizons, at account and campaign level,
+// by about 1.7 points of mean absolute error -- roughly 2.5x the difference
+// between the two models. The window is the decision that matters.
+const averageWindow = "90d"
 
 // runLabel is what goes in runs.model: the model and the window it saw. The
 // worker is still started by the bare model name.
@@ -205,6 +212,7 @@ func importOne(path, dir, dbPath string, horizon, history int, skipFinetune bool
 	// Report 1: the two pretrained models, over each window that the file is long
 	// enough to fill. They need no training and are ready in seconds.
 	var runs []forecastRun
+	byWindow := map[string][]forecastRun{}
 	for _, w := range importWindows {
 		if w.days > len(data.Days) {
 			fmt.Printf("\n  skipping the %s window: the file has %d days\n", w.label, len(data.Days))
@@ -225,23 +233,42 @@ func importOne(path, dir, dbPath string, horizon, history int, skipFinetune bool
 				return err
 			}
 			runs = append(runs, r)
+			byWindow[w.label] = append(byWindow[w.label], r)
 		}
 	}
 
-	avg, ok, err := averageRun(db, name, runs, days, horizon)
+	// The average is the last 90 days, whatever the file's length -- measured
+	// over 31 walk-forward origins, a 90-day window beat both the whole file and
+	// 270 days at every horizon and at both account and campaign level.
+	//
+	// On a file of exactly 90 days the 90d window was skipped above as a
+	// duplicate of the whole file, so `full` *is* the last 90 days there.
+	source := byWindow[averageWindow]
+	if len(source) == 0 {
+		source = byWindow["full"]
+	}
+	avg, ok, err := averageRun(db, name, source, days, horizon)
 	if err != nil {
 		return err
 	}
-	if ok {
-		fmt.Printf("\n  %s: the mean of the %d runs above\n", averageLabel, len(runs))
-		runs = append(runs, avg)
+	if !ok {
+		return fmt.Errorf("could not average the %d-day forecasts, so there is "+
+			"nothing to draw", importMinDays)
 	}
+	fmt.Printf("\n  %s: the mean of %s\n", averageLabel, strings.Join(labelsOf(source), " and "))
+	runs = append(runs, avg)
+
+	// Every window is kept in the database so `accuracy` can score them, but only
+	// the average is drawn: the individual model lines answer a question the
+	// report is not asking, and six of them crowd out the one line that is
+	// actually the recommendation.
+	drawn := []forecastRun{avg}
 
 	first := reportPath(dir, path, "models")
 	if err := os.MkdirAll(filepath.Dir(first), 0o755); err != nil {
 		return fmt.Errorf("creating %s: %w", filepath.Dir(first), err)
 	}
-	if err := writeComparison(first, runs, data, days, history); err != nil {
+	if err := writeComparison(first, drawn, data, days, history); err != nil {
 		return err
 	}
 	fmt.Printf("\n  report 1 of 2: %s\n", first)
@@ -268,15 +295,19 @@ func importOne(path, dir, dbPath string, horizon, history int, skipFinetune bool
 		return nil
 	}
 
+	// The fine-tune is given the whole file, not the 90-day window: it is the one
+	// model that learns from the data rather than reading it, and more of it is
+	// what training has to work with. `data` here is the full read.
 	ft, err := runModel(db, "chronos2ft", runLabel("chronos2ft", "full"), name, data, days, horizon)
 	if err != nil {
 		fmt.Printf("\n  the fine-tuned model would not run: %v\n", err)
 		return nil
 	}
 	runs = append(runs, ft)
+	drawn = append(drawn, ft)
 
 	second := reportPath(dir, path, "with-finetune")
-	if err := writeComparison(second, runs, data, days, history); err != nil {
+	if err := writeComparison(second, drawn, data, days, history); err != nil {
 		return err
 	}
 	fmt.Printf("\n  report 2 of 2: %s\n", second)

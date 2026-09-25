@@ -29,6 +29,13 @@ type modelLine struct {
 	Model  string    // "chronos2"
 	Colour string    // stroke, assigned per model
 	Median []float64 // one value per forecast day
+	// Low and High are the outermost quantiles the model declared -- q10 and q90
+	// for both pretrained models -- drawn as a translucent band behind the
+	// median. The page once drew none: six overlapping bands are unreadable, and
+	// that was the right call when six models shared the axes. It draws one or
+	// two lines now, so the interval is legible and worth having. Empty when a
+	// model returned a single quantile, in which case no band is drawn.
+	Low, High []float64
 }
 
 // statCard is one figure above the chart: the history total, then what each
@@ -167,11 +174,19 @@ func writeComparison(path string, runs []forecastRun, data *Data, days []string,
 				q := per[mi]
 				med := make([]float64, len(q))
 				half := len(q[0]) / 2
+				var lo, hi []float64
+				if len(q[0]) > 1 {
+					lo, hi = make([]float64, len(q)), make([]float64, len(q))
+				}
 				for d := range q {
 					med[d] = q[d][half]
+					if lo != nil {
+						lo[d], hi[d] = q[d][0], q[d][len(q[d])-1]
+					}
 				}
 				lines = append(lines, modelLine{
 					Model: r.Run.Model, Colour: colourFor(i), Median: med,
+					Low: lo, High: hi,
 				})
 				pane.Header = append(pane.Header, r.Run.Model)
 			}
@@ -425,6 +440,23 @@ func drawCompareChart(history []Point, days []string, lines []modelLine, show in
 			dash = fmt.Sprintf(` stroke-dasharray="%s"`, dashFor(li))
 		}
 		fmt.Fprintf(&b, `<g class="series" data-model="%s">`, template.HTMLEscapeString(ln.Model))
+		// The q10-q90 band first, so the median and its markers sit on top of it.
+		// It is inside the same group, so hiding the line hides its band too.
+		if len(ln.Low) == len(ln.Median) && len(ln.Low) > 0 {
+			var top, bot strings.Builder
+			if len(history) > 0 { // start the band at the last real point
+				hx, hy := xs[len(history)-1], y(history[len(history)-1].Value)
+				fmt.Fprintf(&top, "%g,%g ", hx, hy)
+				fmt.Fprintf(&bot, "%g,%g ", hx, hy)
+			}
+			for i := range ln.High {
+				x := xs[len(history)+i]
+				fmt.Fprintf(&top, "%g,%g ", x, y(ln.High[i]))
+				fmt.Fprintf(&bot, "%g,%g ", x, y(ln.Low[i]))
+			}
+			fmt.Fprintf(&b, `<polygon fill="%s" fill-opacity="0.13" stroke="none" points="%s%s"/>`,
+				ln.Colour, top.String(), reversePoints(bot.String()))
+		}
 		fmt.Fprintf(&b, `<polyline fill="none" stroke="%s" stroke-width="2.5" `+
 			`stroke-linejoin="round" stroke-linecap="round"%s points="`, ln.Colour, dash)
 		if len(history) > 0 {
@@ -525,6 +557,16 @@ func shortDay(day string) string {
 
 // dashFor gives each model after the first its own dash pattern, so the lines
 // are still tellable apart in print, in greyscale, or to a colour-blind reader.
+// reversePoints turns "a,b c,d" into "c,d a,b", so the lower edge of a band can
+// be appended to the upper one and close the polygon.
+func reversePoints(s string) string {
+	f := strings.Fields(s)
+	for i, j := 0, len(f)-1; i < j; i, j = i+1, j-1 {
+		f[i], f[j] = f[j], f[i]
+	}
+	return strings.Join(f, " ")
+}
+
 func dashFor(i int) string {
 	patterns := []string{"", "9 5", "2 4", "12 4 2 4"}
 	return patterns[i%len(patterns)]
