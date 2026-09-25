@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -974,5 +975,150 @@ func TestADuplicatedRowCannotHideAMissingCampaign(t *testing.T) {
 	}
 	if got := d.Values["Brand"]["Cost"][60]; got != 120 {
 		t.Errorf("Brand on the middle day = %v, want 120", got)
+	}
+}
+
+// -fill-absent must be a no-op on an export that already lists every campaign on
+// every day. Most exports are dense, so the flag has to be safe to leave on:
+// if it changed a dense file at all it would be a trap rather than a repair.
+func TestFillAbsentChangesNothingOnADenseExport(t *testing.T) {
+	var b strings.Builder
+	b.WriteString("Day,Campaign status,Campaign,Cost,Impr.,Clicks\n")
+	for i := 0; i < 120; i++ {
+		fmt.Fprintf(&b, "%s,Enabled,Live,%d,%d,%d\n", day(i), 100+i, 5000+i*7, 20+i)
+		fmt.Fprintf(&b, "%s,Enabled,Live Two,%d,%d,%d\n", day(i), 60+i, 3000+i*5, 10+i)
+	}
+	path := writeTemp(t, "dense.csv", b.String())
+
+	plain, err := readCSV(path, nil, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	filled, err := readCSVFilling(path, nil, "", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(filled.Stopped) != 0 {
+		t.Errorf("nothing stopped in a dense export; stopped = %v", filled.Stopped)
+	}
+	if len(filled.Raw) != len(plain.Raw) {
+		t.Errorf("raw rows = %d with the flag, %d without", len(filled.Raw), len(plain.Raw))
+	}
+	if !reflect.DeepEqual(plain.Entities, filled.Entities) {
+		t.Errorf("entities = %v with the flag, %v without", filled.Entities, plain.Entities)
+	}
+	if !reflect.DeepEqual(plain.Values, filled.Values) {
+		t.Error("the numbers differ with the flag on; on a dense export they must not")
+	}
+}
+
+// The reason the flag exists, and the reason it is not enough on its own: a
+// campaign the export stops listing has stopped running, so the zeros filled in
+// after it are not a forecasting question. Forecasting that tail returns noise
+// around zero whose quantiles come back out of order and fails the whole run --
+// which is what happened before this rule existed.
+func TestFillAbsentDoesNotForecastACampaignTheExportStoppedListing(t *testing.T) {
+	var b strings.Builder
+	b.WriteString("Day,Campaign,Cost,Impr.,Clicks\n")
+	for i := 0; i < 120; i++ {
+		fmt.Fprintf(&b, "%s,Live,%d,%d,%d\n", day(i), 100+i, 5000+i*7, 20+i)
+		if i < 40 { // ran for 40 days, then the export stops mentioning it
+			fmt.Fprintf(&b, "%s,Gone,%d,%d,%d\n", day(i), 80+i, 4000+i*3, 15+i)
+		}
+		if i >= 30 { // started late and is still running on the last day
+			fmt.Fprintf(&b, "%s,New,%d,%d,%d\n", day(i), 50+i, 2000+i*2, 8+i)
+		}
+	}
+	path := writeTemp(t, "ragged.csv", b.String())
+
+	if _, err := readCSV(path, nil, ""); err == nil {
+		t.Fatal("a ragged export must be refused without the flag")
+	}
+
+	d, err := readCSVFilling(path, nil, "", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"Gone"}; !reflect.DeepEqual(d.Stopped, want) {
+		t.Fatalf("stopped = %v, want %v", d.Stopped, want)
+	}
+	if slicesContainsFold(d.Entities, "Gone") {
+		t.Error("Gone stopped running and must not be sent to a model")
+	}
+	if !slicesContainsFold(d.Entities, "New") {
+		t.Error("New started late but is still running, so it must be forecast")
+	}
+
+	// Stored in full all the same, zeros and history alike.
+	col, ok := d.Values["Gone"]["Cost"]
+	if !ok {
+		t.Fatal("Gone was dropped from the data; it must still be stored")
+	}
+	if len(col) != len(d.Days) {
+		t.Errorf("Gone has %d days stored, want all %d", len(col), len(d.Days))
+	}
+	if col[0] == 0 || col[len(col)-1] != 0 {
+		t.Error("Gone must keep its real history and be zero after it stopped")
+	}
+	// The filled zeros are not rows the platform sent, so they stay out of raw.
+	for _, r := range d.Raw {
+		if r.Data["Campaign"] == "Gone" && r.Day > day(39) {
+			t.Errorf("a synthesised row for %s reached the raw table", r.Day)
+		}
+	}
+}
+
+// A day missing from the middle of a campaign's own run is a broken export, not
+// a campaign that was not running. Filling it with zeros would invent a day the
+// campaign did spend on, so it is refused instead -- the flag repairs a shape,
+// it does not paper over a bad download.
+func TestFillAbsentRefusesAHoleInsideARun(t *testing.T) {
+	var b strings.Builder
+	b.WriteString("Day,Campaign,Cost,Impr.,Clicks\n")
+	for i := 0; i < 120; i++ {
+		fmt.Fprintf(&b, "%s,Live,%d,%d,%d\n", day(i), 100+i, 5000+i*7, 20+i)
+		if i != 60 { // ran throughout, but day 60 is missing from the file
+			fmt.Fprintf(&b, "%s,Holed,%d,%d,%d\n", day(i), 80+i, 4000+i*3, 15+i)
+		}
+	}
+	_, err := readCSVFilling(writeTemp(t, "holed.csv", b.String()), nil, "", true)
+	if err == nil {
+		t.Fatal("a gap inside a run must be refused, not filled")
+	}
+	for _, want := range []string{"Holed", "inside", "Re-export"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error does not mention %q: %v", want, err)
+		}
+	}
+}
+
+// -by names the label column. The fill has to honour it, or it would group the
+// zero rows by one column while the forecast splits campaigns by another.
+func TestFillAbsentHonoursTheNamedColumn(t *testing.T) {
+	var b strings.Builder
+	b.WriteString("Day,Campaign ID,Campaign,Cost,Impr.,Clicks\n")
+	for i := 0; i < 120; i++ {
+		fmt.Fprintf(&b, "%s,11,Live,%d,%d,%d\n", day(i), 100+i, 5000+i*7, 20+i)
+		if i < 40 {
+			fmt.Fprintf(&b, "%s,22,Gone,%d,%d,%d\n", day(i), 80+i, 4000+i*3, 15+i)
+		}
+	}
+	path := writeTemp(t, "ids.csv", b.String())
+
+	d, err := readCSVFilling(path, nil, "Campaign ID", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.GroupBy != "Campaign ID" {
+		t.Fatalf("grouped by %q, want %q", d.GroupBy, "Campaign ID")
+	}
+	if want := []string{"22"}; !reflect.DeepEqual(d.Stopped, want) {
+		t.Errorf("stopped = %v, want %v", d.Stopped, want)
+	}
+
+	// A column that is forecast can never be the label, flag or no flag.
+	if _, err := readCSVFilling(path, nil, "Cost", true); err == nil {
+		t.Error("-by Cost must still be refused: a measurement is not a label")
 	}
 }

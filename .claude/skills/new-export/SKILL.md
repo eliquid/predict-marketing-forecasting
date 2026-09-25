@@ -135,6 +135,15 @@ score it.
    Drop `chronos2ft` if no adapter has been trained; see the `finetune` skill.
    Retraining it on the newer export is optional and separate.
 
+   If it refuses with **uneven rows per day**, the export lists each campaign
+   only on the days it ran rather than zero-filling them. Add `-fill-absent`
+   (to `import` or to `forecast`) and run it again. It is safe on a complete
+   export too — it changes nothing there. `AGENTS.md` §2a2 has the whole rule;
+   the two parts worth knowing at the prompt are that a day missing from the
+   *middle* of a campaign's run is still refused as a broken download, and that
+   a campaign the export stops listing is treated as stopped: stored in full,
+   named on screen, not forecast.
+
 2. **Read what it says it did.** Every line matters:
 
    ```
@@ -142,6 +151,7 @@ score it.
    forecasting: Cost, Impr., Clicks
    for 5: (account), Brand Search, Shopping - All, ...
    switched off in the export, stored but not forecast: Video Awareness, ...
+   stopped running before the export's last day, stored but not forecast: ...
    not forecast, look like identifiers: Campaign ID
    stored, not forecast (you set these, you do not predict them): Budget
    stored but not numbers: Campaign status, Campaign, ...

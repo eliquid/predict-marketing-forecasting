@@ -87,6 +87,9 @@ forecast options:
                   total). Semicolons, because campaign names contain commas.
   -by NAME        the column that separates campaigns, if it cannot be worked out.
                   A name, not a measurement: a column that is forecast is refused
+  -fill-absent    for exports that list a campaign only on the days it ran: add
+                  zero rows outside each campaign's own run. A day missing from
+                  the middle of a run is still refused
   -future K=V,V   known-future values, e.g. -future budget=500,500,600
   -series NAME    name for this series (default: the file name)
   -out FILE       HTML report path (default: alongside the CSV)
@@ -97,6 +100,7 @@ import options:
   -horizon N      days ahead (default 7)
   -history N      days of past data drawn on the charts (0, the default, is all
                   of them -- the chart scrolls)
+  -fill-absent    for exports that list a campaign only on the days it ran
   -no-finetune    write only the first report, skipping the trained model
   -db FILE        database file (default: pm.db)
 
@@ -228,6 +232,8 @@ func cmdForecast(args []string) error {
 	columns := fs.String("columns", "", "which columns to forecast (default: every column holding numbers)")
 	by := fs.String("by", "", "column that separates campaigns -- a name, not a "+
 		"measurement (default: worked out from the file)")
+	fillAbsent := fs.Bool("fill-absent", false, "for exports that list a campaign only "+
+		"on the days it ran: add zero rows outside each campaign's own run")
 	entities := fs.String("entities", "", "which campaigns to forecast, separated by ; (default: all, plus the account total)")
 	future := fs.String("future", "", "known-future values, e.g. budget=500,500,600")
 	history := fs.Int("history", 90, "days of past data to draw on the chart")
@@ -251,7 +257,7 @@ func cmdForecast(args []string) error {
 		return fmt.Errorf("horizon must be at least 1, got %d", *horizon)
 	}
 
-	data, err := readCSV(csvPath, splitList(*columns), *by)
+	data, err := readCSVFilling(csvPath, splitList(*columns), *by, *fillAbsent)
 	if err != nil {
 		return err
 	}

@@ -64,6 +64,10 @@ type Data struct {
 	// off, read from its campaign-status column. Kept separate only so the output
 	// can give the right reason.
 	Paused []string
+	// Stopped is the other subset of Inactive: entities the export stopped
+	// listing before its last day. Only -fill-absent can see this, because only
+	// a ragged export leaves a gap to notice.
+	Stopped []string
 
 	Skipped []string // text columns: stored, never forecast
 
@@ -276,6 +280,9 @@ func parseCell(s string) (float64, bool, error) {
 	return v, pct, nil
 }
 
+// filledLine marks a row -fill-absent synthesised rather than read from the file.
+const filledLine = -1
+
 type row struct {
 	day  string
 	line int      // for error messages
@@ -289,6 +296,11 @@ type row struct {
 // is typical -- so taking column 2 on faith failed on the first real file anyone
 // tried. Text columns are set aside rather than causing an error.
 func readCSV(path string, want []string, groupBy string) (*Data, error) {
+	return readCSVFilling(path, want, groupBy, false)
+}
+
+// readCSVFilling is readCSV with the -fill-absent rule turned on or off.
+func readCSVFilling(path string, want []string, groupBy string, fillAbsent bool) (*Data, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, err
@@ -385,15 +397,40 @@ func readCSV(path string, want []string, groupBy string) (*Data, error) {
 		perDay[day]++
 		rows = append(rows, row{day: day, line: rr.line, raw: rr.rec})
 	}
+	// stoppedEntities are those whose rows end before the file does -- known to
+	// have stopped, not merely quiet. Only -fill-absent can tell.
+	var stoppedEntities []string
+
+	// Some platforms emit a row for every entity on every day, zero-filled, and
+	// some emit a row only where there was activity. fillAbsent handles the
+	// second shape; without it, every day must carry the same number of rows.
+	if fillAbsent {
+		filled, gone, note, err := fillAbsentRows(path, header, rows, layouts, groupBy)
+		if err != nil {
+			return nil, err
+		}
+		stoppedEntities = gone
+		if note != "" {
+			fmt.Print(note)
+		}
+		rows = filled
+		perDay = map[string]int{}
+		for _, r := range rows {
+			perDay[r.day]++
+		}
+	}
+
 	// Every day must have the same number of rows. A day with more or fewer means
-	// a campaign started, stopped or is missing, and summing it would put a step
+	// an entity started, stopped or is missing, and summing it would put a step
 	// in the series that never happened.
 	rowsPerDay := perDay[rows[0].day]
 	for _, r := range rows {
 		if perDay[r.day] != rowsPerDay {
 			return nil, fmt.Errorf("%s: %s has %d rows but %s has %d. "+
 				"Every day must carry the same rows, or adding them up invents a "+
-				"jump in the totals. Re-export a complete date range",
+				"jump in the totals. Re-export a complete date range, or pass "+
+				"-fill-absent if this export only lists an entity on the days it "+
+				"was running",
 				path, r.day, perDay[r.day], rows[0].day, rowsPerDay)
 		}
 	}
@@ -444,8 +481,13 @@ func readCSV(path string, want []string, groupBy string) (*Data, error) {
 		RowsPerDay: rowsPerDay,
 	}
 
-	// Keep every input row exactly as it came in.
+	// Keep every input row exactly as it came in. Rows -fill-absent synthesised
+	// are not input rows and never reach the raw table: raw is the record of what
+	// the platform actually sent, and a zero it never sent does not belong in it.
 	for _, rw := range rows {
+		if rw.line == filledLine {
+			continue
+		}
 		rec := map[string]string{}
 		for c := 0; c < len(rw.raw); c++ {
 			rec[columnName(header, c)] = strings.TrimSpace(rw.raw[c])
@@ -624,6 +666,11 @@ func readCSV(path string, want []string, groupBy string) (*Data, error) {
 			live = append(live, e)
 			continue
 		}
+		if slicesContainsFold(stoppedEntities, e) {
+			d.Stopped = append(d.Stopped, e)
+			d.Inactive = append(d.Inactive, e)
+			continue
+		}
 		if running != nil && !running[e] {
 			d.Paused = append(d.Paused, e)
 			d.Inactive = append(d.Inactive, e)
@@ -698,6 +745,179 @@ func readCSV(path string, want []string, groupBy string) (*Data, error) {
 		d.Names = chosen
 	}
 	return d, nil
+}
+
+// fillAbsentRows adds a zero row for every (day, entity) the file leaves out,
+// but only where the entity's absence means it did not exist yet or had already
+// stopped.
+//
+// Reporting exports come in two shapes. Some emit a row for every entity on
+// every day and put zeros in it; some emit a row only where there was activity,
+// so the day count rises and falls as entities start and stop. The second shape
+// is not a broken export, but it is indistinguishable from one by row count
+// alone, and summing a day with six entities against a day with ten puts a step
+// in the account total that never happened.
+//
+// What separates the two is *where* the absence falls:
+//
+//   - before an entity's first row, or after its last: it was not running. Zero
+//     is what it spent, and filling it in states a fact the export implied.
+//   - between its first and last row: the entity was running and a day is
+//     missing. That is a hole in the data, nothing can be inferred, and it is
+//     still refused.
+//
+// The entity column is found by the same rule used for a dense file -- a label
+// that identifies a row within its day -- except that here the count of distinct
+// values exceeds any single day's row count, which is exactly the symptom.
+func fillAbsentRows(path string, header []string, rows []row, layouts []string, groupBy string) ([]row, []string, string, error) {
+	col := uniquePerDayColumn(header, rows, groupBy)
+	if col < 0 {
+		return nil, nil, "", fmt.Errorf("%s: -fill-absent needs a column naming the thing "+
+			"each row is about, and no column identifies a row within its day. "+
+			"Name it with -by if it is one of these: %s", path, strings.Join(header, ", "))
+	}
+
+	days := map[string]bool{}
+	first, last := map[string]string{}, map[string]string{}
+	seen := map[string]bool{} // day\x1fentity
+	template := map[string]row{}
+	for _, r := range rows {
+		e := strings.TrimSpace(r.raw[col])
+		days[r.day] = true
+		seen[r.day+"\x1f"+e] = true
+		if f, ok := first[e]; !ok || r.day < f {
+			first[e] = r.day
+		}
+		if l, ok := last[e]; !ok || r.day > l {
+			last[e] = r.day
+		}
+		if _, ok := template[e]; !ok {
+			template[e] = r
+		}
+	}
+
+	ordered := make([]string, 0, len(days))
+	for d := range days {
+		ordered = append(ordered, d)
+	}
+	sort.Strings(ordered)
+
+	// A day missing from inside an entity's own run is a hole, not an absence.
+	for e := range first {
+		for _, d := range ordered {
+			if d < first[e] || d > last[e] {
+				continue
+			}
+			if !seen[d+"\x1f"+e] {
+				return nil, nil, "", fmt.Errorf("%s: %q has no row for %s, which is inside "+
+					"its own run (%s to %s). A day missing from the middle is a gap in "+
+					"the export, not an entity that was not running, and nothing can be "+
+					"inferred for it. Re-export a complete range",
+					path, e, d, first[e], last[e])
+			}
+		}
+	}
+
+	added := 0
+	byEntity := map[string]int{}
+	for e, t := range template {
+		for _, d := range ordered {
+			if seen[d+"\x1f"+e] {
+				continue
+			}
+			rec := make([]string, len(t.raw))
+			copy(rec, t.raw)
+			rec[0] = d
+			for c := 1; c < len(rec); c++ {
+				switch {
+				case c == col:
+					// the entity's own name, kept
+				case looksLikeIdentifier(columnName(header, c)):
+					// a label for the entity, not a quantity: keep it
+				default:
+					if _, ok := tryLayouts(strings.TrimSpace(rec[c]), layouts); ok {
+						rec[c] = d // a second date column tracks the day
+					} else if _, _, err := parseCell(rec[c]); err == nil {
+						rec[c] = "0" // it spent nothing, because it was not running
+					}
+				}
+			}
+			rows = append(rows, row{day: d, line: filledLine, raw: rec})
+			added++
+			byEntity[e]++
+		}
+	}
+	// An entity whose rows stop before the file does has stopped running. That is
+	// a fact about the export's shape, not an inference from its values: the
+	// platform had nothing to report for it. Forecasting a tail of zeros produces
+	// noise around zero whose quantiles come back in no order, which fails
+	// checkForecast and takes the whole run down -- so it is excluded for the same
+	// reason a status column marks one paused (AGENTS.md 2a1).
+	lastDay := ordered[len(ordered)-1]
+	var stopped []string
+	for e, l := range last {
+		if l < lastDay {
+			stopped = append(stopped, e)
+		}
+	}
+	sort.Strings(stopped)
+
+	if added == 0 {
+		return rows, stopped, "", nil
+	}
+
+	var names []string
+	for e := range byEntity {
+		names = append(names, fmt.Sprintf("%s (%d)", e, byEntity[e]))
+	}
+	sort.Strings(names)
+	note := fmt.Sprintf("  -fill-absent: added %d zero row(s) for days outside each "+
+		"entity's own run: %s\n", added, strings.Join(names, ", "))
+	return rows, stopped, note, nil
+}
+
+// uniquePerDayColumn finds the column that names what each row is about: the one
+// whose value identifies a row within its day. Text is preferred over a numeric
+// identifier, the same order a dense file uses.
+func uniquePerDayColumn(header []string, rows []row, groupBy string) int {
+	best := -1
+	for c := 1; c < len(header); c++ {
+		if groupBy != "" && !strings.EqualFold(columnName(header, c), groupBy) {
+			continue // the user named the column; only it is allowed to be the label
+		}
+		seen := map[string]bool{}
+		values := map[string]bool{}
+		ok := true
+		for _, r := range rows {
+			if c >= len(r.raw) {
+				ok = false
+				break
+			}
+			v := strings.TrimSpace(r.raw[c])
+			if v == "" {
+				ok = false
+				break
+			}
+			values[v] = true
+			k := r.day + "\x1f" + v
+			if seen[k] {
+				ok = false
+				break
+			}
+			seen[k] = true
+		}
+		if !ok || len(values) < 2 {
+			continue
+		}
+		name := columnName(header, c)
+		if _, _, err := parseCell(rows[0].raw[c]); err != nil {
+			return c // a text column: the best kind of label
+		}
+		if looksLikeIdentifier(name) && best < 0 {
+			best = c
+		}
+	}
+	return best
 }
 
 // tooShort is returned when a file has fewer days than any model can use.
@@ -1045,6 +1265,10 @@ func whyNotForecast(d *Data, e string) string {
 		return "the export says it is switched off, so its next few days are a " +
 			"decision rather than a forecast"
 	}
+	if slicesContainsFold(d.Stopped, e) {
+		return "the export stopped listing it before its last day, so it was not " +
+			"running by then and its next few days are a decision rather than a forecast"
+	}
 	return "nothing it records moved during this period, so there is nothing to forecast for it"
 }
 
@@ -1052,7 +1276,7 @@ func whyNotForecast(d *Data, e string) string {
 func exclusionLines(d *Data) []string {
 	var idle []string
 	for _, e := range d.Inactive {
-		if !slicesContainsFold(d.Paused, e) {
+		if !slicesContainsFold(d.Paused, e) && !slicesContainsFold(d.Stopped, e) {
 			idle = append(idle, e)
 		}
 	}
@@ -1060,6 +1284,10 @@ func exclusionLines(d *Data) []string {
 	if len(d.Paused) > 0 {
 		out = append(out, "  switched off in the export, stored but not forecast: "+
 			strings.Join(d.Paused, ", "))
+	}
+	if len(d.Stopped) > 0 {
+		out = append(out, "  stopped running before the export's last day, stored but not forecast: "+
+			strings.Join(d.Stopped, ", "))
 	}
 	if len(idle) > 0 {
 		out = append(out, "  no activity at all, stored but not forecast: "+

@@ -181,6 +181,18 @@ Several things moved, so older notes may mislead:
   dropdowns are plain JavaScript on purpose — htmx needs a server a `file://`
   page has not got.
 
+- **`-fill-absent` handles ragged exports** (`AGENTS.md` §2a2): platforms that
+  list a campaign only on the days it ran. **Nothing in the code knows which ad
+  network a file came from, and nothing should** — it is the shape of the data
+  that decides. Three parts hold it together: fill only *outside* each campaign's
+  run (a hole in the middle is a broken download and stays refused); keep the
+  synthesised rows out of `raw`, which records what the platform actually sent;
+  and treat a campaign the export stops listing as **stopped** (`d.Stopped`,
+  a third subset of `d.Inactive`), stored but not forecast. Without that last
+  part the first real run died with quantiles 67.3% out of order — the same
+  dead-campaign failure the paused rule exists to prevent. The flag is a no-op
+  on a dense export, measured line for line on a 1,099-day one.
+
 Columns are sorted into forecast / setting / rate / identifier / text by rule
 (`AGENTS.md` §4b). `forecast` prints which rule it applied to each; **`import`
 prints only the `forecasting:` line** and nothing about the columns it set

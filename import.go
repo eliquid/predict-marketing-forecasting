@@ -93,6 +93,8 @@ func cmdImport(args []string) error {
 	dbPath := fs.String("db", defaultPath("pm.db"), "database file")
 	skipFinetune := fs.Bool("no-finetune", false,
 		"skip the fine-tuned model and write only the first report")
+	fillAbsent := fs.Bool("fill-absent", false, "for exports that list a campaign only "+
+		"on the days it ran: add zero rows outside each campaign's own run")
 	fs.Parse(reorderFlags(args))
 
 	if *horizon < 1 {
@@ -110,7 +112,7 @@ func cmdImport(args []string) error {
 	// account, not several accounts in sequence.
 	fresh := true
 	for _, path := range files {
-		if err := importOne(path, *dir, *dbPath, *horizon, *history, *skipFinetune, fresh); err != nil {
+		if err := importOne(path, *dir, *dbPath, *horizon, *history, *skipFinetune, fresh, *fillAbsent); err != nil {
 			return fmt.Errorf("%s: %w", filepath.Base(path), err)
 		}
 		fresh = false
@@ -170,8 +172,8 @@ At least 90 days of history is required. A year is better, two years is best.
 `
 
 // importOne is the whole job for a single file.
-func importOne(path, dir, dbPath string, horizon, history int, skipFinetune, fresh bool) error {
-	data, err := readCSV(path, nil, "")
+func importOne(path, dir, dbPath string, horizon, history int, skipFinetune, fresh, fillAbsent bool) error {
+	data, err := readCSVFilling(path, nil, "", fillAbsent)
 	if err != nil {
 		// A file below the model floor is also below the import's own, higher
 		// gate. Report the gate the reader has to clear, not the one they hit

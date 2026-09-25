@@ -646,7 +646,7 @@ over 262 days arrives as 3,930 rows. That shape drives most of the design.
 | Repeated days | Not an error. The column whose distinct values match the rows-per-day is the campaign column (override with `-by`). Only a **label** qualifies: a text column, or a numeric one that looks like an identifier (`Campaign ID`). A measured column is never chosen, however well its value count happens to fit — see below. |
 | Each campaign | Forecast on its own series. |
 | The account | The sum of every campaign per day, forecast as its own series. `(account)` is its name. |
-| Uneven rows per day | **Refused.** A day missing a campaign would put a step in the totals that never happened. |
+| Uneven rows per day | **Refused.** A day missing a campaign would put a step in the totals that never happened. `-fill-absent` is the one way past it, for exports that list a campaign only on the days it ran — see §2a2. |
 | Text columns | Stored, never forecast. |
 | `Campaign ID` and similar | Numeric, but a label. Stored, never forecast — adding fifteen together gives 327,129,489,016. |
 | Rates (CTR, conversion rate) | **Forecast like anything else.** Percentages parse as numbers ("4.20%" -> 4.20, kept as written) and the sign goes back on in the report. What a rate is *not* is addable, so the account figure is the **mean** across campaigns, not the sum. |
@@ -715,7 +715,9 @@ month, and its history has to already be there when it is.
 reads the export's campaign-status column and keeps the campaigns it says are
 enabled *as of the file's last day*. Everything else is put in `d.Paused`, which
 is a subset of `d.Inactive` — stored, named in the output, and never passed to
-TimesFM, Chronos-2 or the fine-tune. `models/finetune.py`'s `running_groups` applies the
+TimesFM, Chronos-2 or the fine-tune. `d.Stopped` is the other subset and gets the
+same treatment for the same reason, on exports that have no status column to read
+(§2a2). `models/finetune.py`'s `running_groups` applies the
 same rule, so the adapter is fitted to exactly the series it will be asked about.
 
 **Why, concretely.** A paused campaign's next seven days are a decision, not a
@@ -788,6 +790,60 @@ the cause — it is all-zero across every row.
 
 Verified on the real 1,099-day, 15-campaign export: 6 campaigns plus `(account)`
 forecast; 9 stored and named as switched off.
+
+## 2a2. Ragged exports: `-fill-absent`
+
+Not every platform lays its export out the same way. Some emit a row for every
+campaign on every day and zero-fill the quiet ones; others list a campaign only
+on the days it actually ran, so a day near the end has more rows than a day near
+the start. **This is about the shape of the file, not the platform that produced
+it** — nothing in the code knows or asks which ad network an export came from,
+and nothing should be added that does.
+
+A dense export needs nothing. A ragged one is refused by the rows-per-day rule
+(§2a), because the tool cannot tell a campaign that was not running from a
+campaign whose row went missing. `-fill-absent` on `forecast` and `import`
+answers that question for it: **add a zero row for every day outside each
+campaign's own run.** Measured on a real 116-day ragged export: 467 rows added
+across 7 campaigns, giving an even 12 rows a day.
+
+Three parts of the rule matter, and all three were arrived at by breaking it:
+
+- **Only outside the run.** A day missing from between a campaign's first and
+  last row is a hole in the download, not a campaign that was off, and it is
+  **refused** with the campaign named and its run printed. Filling it would
+  invent a zero on a day that did have spend. The flag repairs a shape; it does
+  not paper over a bad export.
+- **The filled rows never reach `raw`.** `raw` is the record of what the platform
+  actually sent, and a zero it never sent does not belong in it. They appear in
+  `series` only, which is the grid the models read. On that same export: 925 raw
+  rows, 1,392 grid rows.
+- **A campaign the export stops listing has stopped running.** Its rows ending
+  before the file's last day is a fact about the export, not an inference from
+  its values, and it is the shape-based equivalent of a status column saying
+  paused. Such campaigns go in `d.Stopped` — another subset of `d.Inactive` —
+  stored in full, named in the output, never forecast (§2a1).
+
+That last part is not a refinement, it is the reason the feature works at all.
+The first run with the fill and without it failed exactly as §2a1 predicts:
+`Testing 5` ran for 22 of 116 days, so 94 of its days were filled zeros, and
+`chronos2` came back with quantiles **67.3%** out of order and took the run down.
+
+A campaign that started late is the other case and is **not** stopped: it is
+running on the last day, so it is forecast normally.
+
+**The flag is safe to leave on.** On a dense export it changes nothing — no rows
+added, no campaign marked stopped, the same numbers. Measured on a real 1,099-day
+dense export: every line of output identical with the flag and without it, down
+to the 16,485 raw rows and the same 13 excluded campaigns. `TestFillAbsentChangesNothingOnADenseExport`
+holds that.
+
+**The label column.** The fill needs to know which column names the thing each
+row is about, and finds it the same way §2a does — by shape, preferring a text
+column, accepting one that `looksLikeIdentifier` accepts. `-by` overrides it, and
+the fill honours it, so the zeros cannot be grouped by one column while the
+forecast splits campaigns by another. If no column identifies a row within its
+day, the error names `-by` and lists the columns.
 
 ## 2b. What a first run looks like
 

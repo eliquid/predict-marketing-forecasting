@@ -608,8 +608,37 @@ of your data while still producing a confident-looking forecast:
 | A row that cannot be read | Skipping it leaves a hole the model reads as a real dip |
 | A missing day | Both models treat the series as consecutive, so a gap shifts every forecast date |
 | Fewer than 32 rows | Below one input patch neither model can see a pattern |
+| Uneven rows per day | A day missing a campaign would put a step in the account total that never happened |
 
 Fill missing days in your data — a real `0` is fine — rather than leaving them out.
+
+### Exports that list a campaign only on the days it ran
+
+Platforms lay their exports out differently. Most write a row for every campaign
+on every day, zero-filling the quiet ones. Some write a row only when a campaign
+actually ran, so later days have more rows than early ones and the export is
+refused by the rule above.
+
+Add `-fill-absent` to `import` or `forecast` for those:
+
+```bash
+./predictmarketing import -fill-absent
+```
+
+It adds a zero row for each day outside a campaign's own run, and tells you what
+it added. It is safe to leave on — on an export that is already complete it
+changes nothing at all.
+
+Two things it deliberately will not do:
+
+- **A day missing from the middle of a campaign's run is still refused.** That is
+  a broken download, not a campaign that was switched off, and filling it would
+  invent a quiet day the campaign did spend on. Re-export the range.
+- **A campaign the export stops listing is not forecast.** It stopped running, so
+  its next seven days are a decision, not a forecast — the same treatment a
+  paused campaign gets. It is still stored in full, and it is named on screen.
+  A campaign that *started* late is not affected: it is still running, so it is
+  forecast as normal.
 
 ## Things that look wrong but are not
 
