@@ -10,12 +10,18 @@ the data folder up until yesterday ( a full day of data ), the script runs, and 
 produces a forecast of the next 7 days on the average of 2 models and a fine tuned
 model of just your data... so 2 forecasts.
 
+You have to download and import the CSV daily if you want to get predictions every
+day going forward, the full data. Each import deletes the data from prior. There is
+no append only data. It reruns the full date you give it on each import.
+
+For 3 years of data, this can be up to 17 minutes to get the full predictions.
+
 Currently tested and working for data from Google Ads, on spend and impressions
 and clicks.
 
 A paid version of this script is being worked on that will allow you to auto import
-from Google, Meta, and MSN Ads, and predict on more metrics like Conversions, 
-Revenue, CPA, CTR, and more with anomaly detection and warnings via Telegram.
+from Google, Meta, and MSN Ads, append data for you, and predict on more metrics 
+like Conversions, Revenue, CPA, CTR, and more with anomaly detection and warnings via Telegram.
 
 ---
 
