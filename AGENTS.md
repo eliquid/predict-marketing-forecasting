@@ -430,6 +430,13 @@ the part saying nothing. `compact()` also never carries the `%`, so a rate's axi
 and its table are in different units on the same screen. Fixing it changes both
 pages.
 
+**Two smaller things a redraw cannot reproduce exactly.** The excluded-campaign
+note comes out in a different order — `import` lists them in file order,
+`rebuildData` derives the list from `series` with `ORDER BY entity` and has no
+file order to recover. And the generation timestamp differs, obviously. Both are
+cosmetic, but they are why a byte-for-byte diff of the two pages is not the right
+check; compare the drawn lines instead.
+
 **One thing is not recoverable: the `%` sign.** `series` stores the number a rate
 was parsed to, not that it was written as a percentage, so `data.Percent` is empty
 on a rebuild and a re-rendered rate prints bare. The number is right; only the

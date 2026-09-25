@@ -238,14 +238,21 @@ That one command:
    tells you so. **365 days is better** — a year makes annual seasonality
    learnable. **730 days is best**: two years lets that seasonality be confirmed
    rather than guessed.
-3. **Forecasts with every model**, each campaign and the account total.
-4. **Writes report 1** into `data/reports/` — `chronos2` and `timesfm3` together
-   on one page. This lands in seconds.
+3. **Empties the database.** An import is a new account, so everything already
+   stored is deleted first — including past forecasts. This happens *after* the
+   CSV parses, so a malformed export cannot destroy your data and give nothing
+   back. See **Scoring forecasts** below for what this costs.
+4. **Forecasts three windows** — the whole file, its last 270 days and its last
+   90 — with both pretrained models, storing all of them, and **writes report 1**
+   into `data/reports/` showing the actuals and one forecast line: the 90-day
+   average. This lands in seconds. A window longer than the file is skipped and
+   announced, never an error.
 5. **Moves the CSV into `data/imported/`**, so the folder only holds what has not
    been read yet. Nothing is overwritten: a second file of the same name gets a
    timestamp.
-6. **Trains the third model on your data and writes report 2** — the same two
-   models plus `chronos2ft`. Training runs to completion — no time limit. Two
+6. **Trains the third model on your data and writes report 2** — the same
+   average line plus `chronos2ft`, which is trained on the **whole file**.
+   Training runs to completion — no time limit. Two
    runs measured on the machine above, both 2,000 steps: **about 17 minutes**
    (1,042s) on a three-year, fifteen-campaign export, and about **9 minutes**
    (545s) on the small `examples/05-campaigns.csv`. Your own run records its
@@ -261,9 +268,17 @@ That one command:
   for 5: (account), Brand Search, Shopping - All, Performance Max, Display Remarketing
   switched off in the export, stored but not forecast: Video Awareness
 
-  running chronos2
+  full window (150 days)
+    running chronos2
+    running timesfm3
 
-  running timesfm3
+  skipping the 270d window: the file has 150 days
+
+  90d window (90 days)
+    running chronos2
+    running timesfm3
+
+  average@90d: the mean of chronos2@90d and timesfm3@90d
 
   report 1 of 2: data/reports/05-campaigns_models.html
   filed away:    data/imported/05-campaigns.csv
@@ -274,15 +289,22 @@ That one command:
 
 ### What the reports look like
 
-Both reports are one self-contained HTML file with **every model on the same
-chart**: what actually happened in grey, then one line per model over the days
-ahead — the first solid, the rest dashed, each named where it ends. Report 1
-has two model lines, report 2 has three. Dashes as well as colour, so the lines
-are still tellable apart in greyscale or to a colour-blind reader.
+Both reports are one self-contained HTML file: what actually happened in grey,
+then the forecast. **Report 1 draws one line** — `average@90d`, the mean of the
+two pretrained models over the last 90 days. **Report 2 adds `chronos2ft@full`**,
+the fine-tune. Behind each line, its **q10–q90 range is shaded**, so you can see
+how sure the model is and not only what it guessed; hiding a line from the legend
+hides its band too.
+
+Why one line rather than six: a walk-forward backtest over 31 daily origins on a
+real account had the 90-day window beating both the whole file and 270 days at
+**every horizon**, and the average of the two models beating either alone. The
+other five runs are still in the database — they are simply not what the page
+recommends.
 
 Above each chart: what was actually spent over the window drawn, and what each
-model expects over the days ahead — three figures in report 1, four in report 2.
-They follow the dropdowns, so they always describe the chart you are looking at.
+drawn line expects over the days ahead. They follow the dropdowns, so they always
+describe the chart you are looking at.
 
 The forecast is drawn **five times wider than the history**, because it is the
 shortest part of the series and the reason the page exists — at equal spacing it
@@ -809,13 +831,27 @@ the report referencing an htmx file it did not ship.
 
 ## Checking the models against reality
 
-Every forecast is kept. When the days it predicted arrive and you import a newer
-export, they can be scored — nothing is recomputed, the original forecast is
-still exactly as it was made.
+Every forecast is stored as it was made, so when the days it predicted arrive it
+can be scored against them — nothing is recomputed.
+
+**But `import` empties the database**, because an import is a new account. That
+deletes the forecasts too, which means **scoring does not work across imports**:
+the forecast made this week is deleted by next week's import, and that is the
+very import that would have brought the actuals to judge it against.
+
+To build a history worth scoring, use `forecast` with an explicit `-db`. It
+replaces the stored history for that dataset but **appends** runs, so they
+accumulate:
 
 ```bash
-./predictmarketing accuracy
+# last week's export, then this week's, under one series name
+./predictmarketing forecast "your-export.csv" -series acct -db history.db
+./predictmarketing accuracy -db history.db
 ```
+
+Run the first line again with each new export. The `-series` name is what ties
+the new actuals to the old forecasts; a different name starts a separate dataset
+and nothing gets scored.
 
 ```
 forecast vs actual for (account)
