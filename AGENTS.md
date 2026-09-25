@@ -35,7 +35,7 @@ published, through the adapter in `models/`.
 ./install.sh                # one-time setup: Python env, build, model weights (~2.5 GB)
                             # sets up chronos2 and timesfm3; chronos2ft needs YOUR data
 go build -o predictmarketing .
-go test ./...               # 154 test functions, 170 cases
+go test ./...               # 172 tests and a fuzz target, 190 cases
 go vet ./... && gofmt -l .  # must be silent
 ./predictmarketing forecast testdata/example.csv -model chronos2
 ```
@@ -78,12 +78,13 @@ when given.
 |---|---|
 | Read every new CSV in `data/` | `pendingFiles`, creates the folder and a note if absent |
 | Refuse under **90 days**; 365 better, 730 best | `enoughHistory` / `historyVerdict` |
+| Empty the database — but only for the first file of the run, and only once the CSV has parsed | `storedRuns`, then `clearDatabase` (§4a) |
 | Forecast each model over every entity, **once per window** | `importWindows`, `lastDays`, `runModel` |
-| Store the mean of those runs as a run of its own | `averageRun` |
-| Report 1 into `data/reports/`: 6 window lines + the average | `reportPath`, then `writeComparison` |
+| Store the mean of the 90-day runs as a run of its own | `averageRun` |
+| Report 1 into `data/reports/`: the average line alone | `reportPath`, then `writeComparison` |
 | Move the CSV to `data/imported/` | `fileAway`, never overwrites |
 | Reports go to `data/reports/`, never beside the export | `reportPath` — `data/` is meant to show at a glance what is still unread |
-| Train `chronos2ft` on the **full** history, then report 2 with everything | `trainFinetune`, then `writeComparison` again |
+| Train `chronos2ft` on the **full** history, then report 2: the average plus `chronos2ft@full` | `trainFinetune`, then `writeComparison` again |
 
 **The table is one file's job, and `cmdImport` stops at the first file that
 fails.** `pendingFiles` sorts the folder's CSVs by name and calls `importOne` in
@@ -125,8 +126,9 @@ gone. Do not reintroduce a time limit in any form: if training is too slow, lowe
 ### Three windows, one chart
 
 Every import forecasts the same file three times — the **whole file**, its **last
-270 days** and its **last 90 days** — with both pretrained models. All six runs
-are **stored**; only their **90-day average** is **drawn**.
+270 days** and its **last 90 days** — with both pretrained models. Six runs on a
+file long enough for all three windows, fewer when a window is skipped. Every one
+of them is **stored**; only the **90-day average** is **drawn**.
 
 | Window | Runs when | Stored as |
 |---|---|---|
@@ -156,8 +158,9 @@ days blind on a real account:
 | whole file | 18.88% | 33.91% |
 | 270 days | 19.14% | 34.36% |
 
-The 90-day window won **every one of 7 horizons at both levels** — 16 of 16 — by
-about 1.7 points of mean absolute error. Choosing the *window* was worth roughly
+The 90-day window won **every one of the 7 horizons and the pooled total, at
+both account and campaign level — 16 comparisons out of 16** — by about 1.7
+points of mean absolute error. Choosing the *window* was worth roughly
 2.5x more than choosing the *model* (0.70 points between the best and worst
 model, pooled across windows). 270 days was the worst of the three, so this is
 not a smooth "recent is better" gradient: it is that the last ~90 days are the
@@ -168,7 +171,7 @@ models), so it is what the report recommends. The individual model lines answer 
 question the report is not asking, and six of them crowd out the one line that is
 the recommendation — so they are kept in the database and left off the page.
 
-**They are still stored.** All six window runs go into `runs`/`forecasts` under
+**They are still stored.** Every window run goes into `runs`/`forecasts` under
 `chronos2@90d`, `timesfm3@270d` and so on, because `accuracy` groups by that
 column and re-running that comparison on real future days is how the choice above
 gets re-tested rather than taken on faith.
@@ -209,6 +212,10 @@ is skipped there as a duplicate of the whole file, so there would be no 90-day
 runs to average — and `full` *is* the last 90 days in that case. Without the
 fallback the one file length that is exactly the documented minimum would produce
 no line at all. `TestTheAverageFallsBackToFullOnAnExactlyMinimumFile` pins it.
+The label does **not** change: it is still stored as `average@90d`, because
+`averageLabel` is a constant. On that one file length the name is accurate
+anyway, but do not read the `@90d` in `runs.model` as proof of which window fed
+it — check which runs the `averaged` field of its `model_info` lists.
 
 **Why two reports.** The third model has to be trained on the user's own data
 first, which takes as long as it takes. Report 1 is written and the CSV filed away
@@ -220,22 +227,27 @@ recovery map, because each step is the only thing that records itself:
 
 | Stopped | `data/` | `runs` | `series` / `raw` | Reports |
 |---|---|---|---|---|
-| reading the CSV, or the history gate | CSV still there | — | — | — |
-| a model, part way | CSV still there | nothing for that model | already written | — |
-| between the two models | CSV still there | one row | already written | — |
-| the fine-tune | CSV in `imported/` | two rows | written | report 1 only |
+| reading the CSV, or the history gate | CSV still there | untouched — the wipe has not happened yet | untouched | — |
+| a model, part way | CSV still there | the windows already finished; nothing for this one | already written | — |
+| after the last window, before the average | CSV still there | one row per model per completed window, no `average@90d` | already written | — |
+| the fine-tune | CSV in `imported/` | every window run **and** `average@90d` | written | report 1 only |
 
 A `runs` row appears only once a model has finished every entity, so a model killed
 half way leaves nothing behind. `series` and `raw` are written *before* any model
 runs, so **history in the database is never evidence that a forecast happened** — a
-Ctrl-C during the first model still leaves the whole export stored. Re-running
-`import` on a CSV still in `data/` is safe and is the intended recovery: `series`
-upserts and `raw` is replaced per source (§4a), so only an extra `runs` row
-survives, which `report` ignores and `accuracy` counts twice.
+Ctrl-C during the first model still leaves the whole export stored.
+
+**What the interruption cannot undo is the wipe.** From the moment the first file
+parses, whatever the database held before this import is gone (§4a), and stopping
+part way does not bring it back.
+
+Re-running `import` on a CSV still in `data/` is the intended recovery, and it is
+safe because that wipe happens again: the half-finished runs go with it, so the
+second attempt leaves exactly one set. Nothing is double-counted.
 
 Once the CSV has moved to `imported/` the job cannot be re-run that way without
-re-forecasting both pretrained models and filing a second copy of the same export.
-The `finish-an-import` skill has the steps that finish it in place.
+re-forecasting both pretrained models over every window and filing a second copy of
+the same export. The `finish-an-import` skill has the steps that finish it in place.
 
 **A failed fine-tune exits 0.** `importOne` returns `nil` on every fine-tune failure
 path, so a cron job or script sees success and one report. The only reliable check
@@ -251,7 +263,7 @@ line and its band together.
 
 The band was deliberately absent for most of this project's life, and the reason
 was good at the time: the page drew six model lines, and six overlapping
-translucent bands are unreadable. It draws one or two now (2c), so the interval
+translucent bands are unreadable. It draws one or two now, so the interval
 is legible — and it was always in the database, since every worker returns nine
 quantiles and only the median was ever rendered. A model that declares a single
 quantile gets no band rather than a degenerate one.
@@ -279,7 +291,7 @@ projection in JavaScript. `drawCompareChart` returns the drawing **and** the
 series as JSON for exactly that reason.
 
 One caveat, because it decides what you are allowed to change: the crosshair does
-**not** in fact depend on the width being fixed. `fromEvent` divides the pointer
+**not** in fact depend on the width being fixed. `fromEvent` multiplies the pointer
 offset by `svg.viewBox.baseVal.width / rect.width`, so it already survives any
 uniform scaling, and the markers and the rule are positioned in user units and
 scale with it. Forcing `width:100%` on a real report — scale factor 5.25 — left the
@@ -354,9 +366,19 @@ being a separate command rather than a flag on `import`.
 |---|---|
 | List the datasets that have forecasts, or check the one named | `storedSeries` |
 | Take the newest run of each model, **restricted to the newest `as_of`** | `latestRuns` |
+| Narrow those to the lines `import` draws: `average@90d`, plus any fine-tuned run | `rerenderSeries` |
 | Read the stored quantiles back into `[metric][day][quantile]` | `loadForecast` |
 | Rebuild the history and the inactive entities from `series` | `rebuildData` |
 | Write report 1, and report 2 if a fine-tuned run is stored | `writeComparison` |
+
+**The narrowing is what keeps a redraw from disagreeing with the page it
+replaces.** The window runs are all there under the newest `as_of`, and drawing
+them would put six lines on a page `import` drew one line on. So `rerenderSeries`
+keeps `average@90d` alone for report 1 and adds the fine-tuned run for report 2.
+A database written before the average existed has no `average@90d`, and there it
+falls back to every pretrained run rather than producing an empty page — which is
+also the path a bare `forecast` takes, since `forecast` stores `chronos2`, not
+`chronos2@90d`.
 
 Only runs sharing the newest `as_of` are drawn. Two runs made from different
 amounts of history are not comparable, and putting them on one set of axes would
@@ -370,7 +392,8 @@ data the run was given, is not printed at all. The two come apart the moment you
 backtest or re-forecast an older export. So after a single `forecast` on a newer
 file, `report` will silently draw a **one-model** comparison page (it names the
 models it used on the line it prints) until every model has been run at the same
-`as_of`. `import` never hits this because it runs all three together. To see what
+`as_of`. `import` never hits this: every run it makes shares one `as_of`, and the
+narrowing above puts the redraw back on the lines `import` drew. To see what
 `report` will pick:
 
 ```sql
@@ -433,9 +456,12 @@ pages.
 **Two smaller things a redraw cannot reproduce exactly.** The excluded-campaign
 note comes out in a different order — `import` lists them in file order,
 `rebuildData` derives the list from `series` with `ORDER BY entity` and has no
-file order to recover. And the generation timestamp differs, obviously. Both are
-cosmetic, but they are why a byte-for-byte diff of the two pages is not the right
-check; compare the drawn lines instead.
+file order to recover. And the generation timestamp differs whenever the redraw
+lands in a later minute — it is printed to the minute, so a redraw run straight
+after the import usually carries the same one. Both are cosmetic. They are why a
+byte-for-byte diff of the two pages is not a *reliable* check, even though on
+`examples/05-campaigns.csv` it does come out identical (§9); compare the drawn
+lines instead.
 
 **One thing is not recoverable: the `%` sign.** `series` stores the number a rate
 was parsed to, not that it was written as a percentage, so `data.Percent` is empty
@@ -560,6 +586,12 @@ not do:
 awk -F, 'NR>1{c[$1]+=$10} END{for (d in c) print d, c[d]}' "Campaign report.csv" \
   | sort | tail -8
 ```
+
+`$1` is the day and `$10` the cost column — **check both against your own
+header first**, they move with the export (`Cost` is field 6 in
+`examples/05-campaigns.csv`). `awk -F,` also splits inside quotes, so a campaign
+name containing a comma shifts every field after it on that row; that skews the
+daily totals but not the shape this check is looking for.
 
 If the last day is far below the ones before it, the export ran too early.
 Re-download ending on yesterday. **The tool does not check this and should not
@@ -921,9 +953,11 @@ done, and since `forecast_accuracy` joins forecasts to `series` and never to
 Measured before the fix: seven days scored against numbers present in no raw row.
 
 The consequence to understand: **a re-import discards the previous dataset of the
-same name.** Runs and forecasts survive — nothing references `series` — but a
-forecast made against data you have since replaced simply stops having an actual
-to score against. That is the honest outcome, and it is what makes importing a
+same name.** Runs and forecasts survive that replacement — nothing references
+`series` — but a forecast made against data you have since replaced simply stops
+having an actual to score against. (That is `saveData`/`saveRaw` on their own,
+which is all `forecast` does. `import` goes further and deletes the runs as well
+— see the wipe below.) That is the honest outcome, and it is what makes importing a
 different account under an old name safe. Use a distinct `-series` name if you
 want two accounts side by side.
 
@@ -944,13 +978,19 @@ filter is on what gets *modelled*, never on what gets stored.
 **Every forecast is kept, not just the one that was drawn.** Each model's run is
 its own row in `runs`, carrying `as_of` (the last day of real data it was given)
 and `model_info`; every predicted day, entity, metric and quantile is a row in
-`forecasts`. So a run on 2026-09-23 stores what TimesFM, Chronos-2 *and* the
-fine-tune each said about 2026-09-24 through 2026-09-30, at full precision,
-before any of it was known. When the next export arrives it lands in `series`,
-and `forecast_accuracy` joins the two on `(series_id, entity, metric, day)` so
-each prediction can be scored against what actually happened — per day, per
-model, per days-ahead. That join is the whole reason the forecast table exists;
-nothing else reads it after the report is written.
+`forecasts`. So an import on 2026-09-23 stores what TimesFM and Chronos-2 said
+over each window, what their average said, and what the fine-tune said about
+2026-09-24 through 2026-09-30, at full precision, before any of it was known.
+When the next export arrives it lands in `series`, and `forecast_accuracy` joins
+the two on `(series_id, entity, metric, day)` so each prediction can be scored
+against what actually happened — per day, per model, per days-ahead. That join is
+the whole reason the forecast table exists; nothing else reads it after the report
+is written.
+
+That scoring only happens if the actuals arrive by a route that keeps the
+forecasts: **a second `import` wipes them before it stores anything**, so the
+prediction and the outcome never meet. See the wipe below, and use `forecast` if
+you want a history worth scoring.
 
 Two indexes are declared beyond the primary keys: `raw_day` on `(source, day)`,
 and `forecasts_median`, a partial index on
@@ -1053,7 +1093,7 @@ is the very import that brings the actuals to judge it against.
 `forecast` does **not** wipe. It replaces `series` and `raw` per dataset and
 appends runs, so a workflow built on that command still accumulates a history
 worth scoring. That is the route to a working `accuracy`, and it is what the
-walk-forward backtest in §9 used.
+walk-forward backtest behind the window choice (§2c) used.
 
 **Forecasts are kept so they can be scored later.** Each run records `as_of` — the
 last day of real data it was based on, which is not always the day it was run.
@@ -1225,7 +1265,7 @@ defaults fail in opposite ways:
 | The file | What happens |
 |---|---|
 | has the metrics under other names (`Impressions`, `Spend`) | the trainer exits before training: `columns not in <file>: ['Impr.']`, and lists what the file does have |
-| has no `Campaign` column, or calls it `Campaign name` | **it trains, on one series.** Every row collapses into `(account)`, `running_groups` returns `None`, and the only line printed is `training on 1 series x N days x 3 metrics` |
+| has no `Campaign` column, or calls it `Campaign name` | **it trains, on one series.** Every row collapses into `(account)`, `running_groups` returns `None`, and the only sign of it is the leading `training on 1 series x N days x 3 metrics` |
 
 The second is the dangerous one: it succeeds, it registers, and `train_series: 1` in
 `models/finetuned.json` is the only record. Read that field before believing a
@@ -1391,7 +1431,7 @@ wrong answer that looked right.
 
 | | |
 |---|---|
-| Language | Go for everything except the Python in `models/` — the three workers, the trainer and the two weights helpers, ~630 lines in all. Not "100% Go" — earlier drafts of these docs said so and were wrong. |
+| Language | Go for everything except the Python in `models/` — the three workers, the trainer and the two weights helpers, 662 lines in all. Not "100% Go" — earlier drafts of these docs said so and were wrong. |
 | Storage | SQLite via `modernc.org/sqlite` (pure Go, no CGo, so it cross-compiles) |
 | Dependencies | That one, and nothing else. Standard library for the rest. |
 | Output | A static HTML file you double-click. **No server. No `serve` command.** |
@@ -1417,9 +1457,10 @@ wrong answer that looked right.
 - Python side installed: **~820 MB** (torch is ~570 MB of it). Weights: **1.7 GB**.
 - A clean `./install.sh` measured **182 seconds** on a fast connection.
 - `go test .` **33s**; `go test -race -count=2 .` **71s**; `sh examples/walkthrough.sh`
-  **28s**; fuzzing runs ~1,100 exec/s. On `examples/05-campaigns.csv`,
-  `import -no-finetune` takes **7s** against `report`'s **0.02s** — which is why
-  `report` exists for drawing changes.
+  **28s**; fuzzing runs ~1,100 exec/s. On `examples/05-campaigns.csv` (150 days,
+  so `full` and `90d` — four model runs), `import -no-finetune` takes **14s**
+  against `report`'s **0.02s** — which is why `report` exists for drawing
+  changes. A file long enough for all three windows pays for six runs, not four.
 - Cross-compiles cleanly to six targets; `build-dist.sh` ships four. No Windows
   build is shipped, because `install.sh` is POSIX sh.
 - ONNX: Chronos-2 has **no path** — `torch.export` cannot capture it because it
@@ -1514,7 +1555,7 @@ None of these were in the models. All were in the surrounding code.
 
 The table above is what the tests *do* guarantee. This is the other half, and it is
 the half a future agent needs, because a green `go test` here is not the same thing
-as a working tool. Measured with `go tool cover -func`: **59.1% of statements**.
+as a working tool. Measured with `go tool cover -func`: **60.2% of statements**.
 
 **Whole commands are never executed by a test.** Coverage is 0.0% for every `cmd*`
 function — `cmdForecast`, `cmdModels`, `cmdRuns`, `cmdAccuracy`, `cmdSetup`,
@@ -1526,8 +1567,9 @@ flag parsing, the defaulting, the console output and the ordering of steps are n
 functions. `TestReportCommandIsDocumented` checks that five documents *mention* it
 and that the help lists it. Nothing runs it. The `%`-sign limit those documents all
 state is asserted as prose and verified nowhere. An exact-equality test is cheap and
-available: `import` then `report` on `examples/05-campaigns.csv` produce
-byte-identical pages.
+available: `import -no-finetune` then `report` on `examples/05-campaigns.csv`
+produce byte-identical pages — measured, `diff` is empty. That file has no rate
+column, so it does not exercise the `%` limit; a fixture that does would.
 
 **`import.go`'s orchestration is 0.0% covered** — `importOne`, `runModel`,
 `trainFinetune`, `defaultPath` — while the units around it are covered.
@@ -1543,9 +1585,13 @@ does not build `./predictmarketing`, so it either skips or runs a build from som
 earlier commit. Measured: it passed against a binary reporting a different commit
 from HEAD. Build first, or it is theatre.
 
-**Fifteen tests vanish silently without `./install.sh`.** In a tree with
-`models/.venv` removed — exactly what `share.sh` hands someone — the suite still
-exits 0 and prints `ok`, with 139 passes instead of 153 and 15 skips. What goes
-missing is every protocol test, both weights tests and the perturbation test: the
-checks that prove the models are real. A green run on a fresh clone means less than
-a green run here.
+**Thirteen tests vanish silently without `./install.sh`.** Measured on a fresh
+clone with no `models/.venv` — exactly what `share.sh` hands someone — the suite
+exits 0 and prints `ok` in about a second: 158 pass and 15 skip, against 172
+passing and 1 skipping here. Two of those 15 skip anyway
+(`TestDefaultsAnchorToTheInstallNotTheShell`, and `TestBinaryWorksFromAnotherDirectory`
+because a clone has no binary). What actually goes missing is every protocol
+test, both weights tests and the perturbation test: the checks that prove the
+models are real. Worse, `TestEachMetricGetsItsOwnForecast` is reported as
+**PASS** while both its subtests skip, so the count understates it. A green run
+on a fresh clone means less than a green run here.

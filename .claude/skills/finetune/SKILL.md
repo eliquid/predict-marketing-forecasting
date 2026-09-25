@@ -16,6 +16,28 @@ writes a second report with it included (`AGENTS.md` §2c). Use the steps below
 when you want to train on a specific file, with different settings, or without
 running a whole import.
 
+Three things about the import path are worth knowing before you go looking for
+the adapter's numbers:
+
+- **It is given the whole file**, never one of the shortened windows the two
+  pretrained models also run over. It is the one model that learns from the data
+  rather than reading it, so more of it is what training has to work with.
+- **Its run is stored as `chronos2ft@full`**, not `chronos2ft`. `accuracy`
+  groups by that column, so a query written against the bare name finds nothing.
+- **It is left out of `average@90d`**, the line report 1 draws. It is fitted to
+  the same data it would be averaged into and has not beaten the stock models
+  (`AGENTS.md` §4c), so a weaker, leakier opinion is kept out of the ensemble.
+  Report 2 is where it appears, as a line of its own.
+
+`import` runs `finetune.py <csv> --steps 2000` and passes nothing else, so
+`--metrics Cost,Impr.,Clicks` and `--group Campaign` stand — and those names are
+Google-Ads-shaped. On an export that calls its columns something else the trainer
+either exits before training (`columns not in <file>: ['Impr.']`) or, worse, if
+there is no `Campaign` column it **trains happily on one series**, everything
+collapsed into `(account)`. `train_series: 1` in `models/finetuned.json` is the
+only record that happened. Read that field before believing a fine-tune covered
+the campaigns, and retrain by hand with the right flags (`AGENTS.md` §4c).
+
 ## Train
 
 ```bash
@@ -65,16 +87,37 @@ Then it is just another model:
 ## Before you believe it helped
 
 **Score it against the stock model on days it never saw.** This is the whole
-point and it is easy to skip:
+point and it is easy to skip.
+
+**Do not expect `pm.db` to hold the evidence.** `import` empties the database
+before every import (`AGENTS.md` §4a), so the adapter's forecast is deleted by
+the very import that would bring the actuals to judge it against — `accuracy`
+cannot measure anything across imports. `forecast` does not wipe, so build the
+comparison yourself in a database of your own:
 
 ```bash
-./predictmarketing accuracy -db pm.db
+rm -f /tmp/ft.db
+for m in chronos2 chronos2ft; do
+  ./predictmarketing forecast OLDER.csv -model $m -series X -db /tmp/ft.db -out /tmp/ft_$m.html
+done
+# ...once the days it forecast have actually happened:
+./predictmarketing forecast NEWER.csv -model chronos2 -series X -db /tmp/ft.db -out /tmp/ft_a.html
+./predictmarketing accuracy -db /tmp/ft.db
 ```
+
+The second file only has to supply the actuals; `series` is replaced per dataset,
+so use the **same `-series` name** or the join finds nothing.
 
 `chronos2ft` will be **absent from that table** if every forecast it has made
 falls inside its training window — that is correct, not a bug. To score it you
 need a forecast whose days are *after* `trained_through`, which means either
 waiting for real days to arrive, or retraining on a cutoff and forecasting past it.
+
+One absence is not: if `trained_through` in `models/finetuned.json` is not
+`YYYY-MM-DD`, the export was not ISO-dated, the guard compares a mismatched pair
+of strings and marks **every** row trained-on — which looks identical to the
+honest absence above (`AGENTS.md` §4c). Check that field before believing either
+an absence or a score.
 
 Never write an accuracy query without `trained_on = 0`.
 

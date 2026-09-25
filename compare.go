@@ -326,9 +326,16 @@ func sharedMetrics(runs []forecastRun) []string {
 // history is still all there, to the left, and the chart scrolls.
 //
 // The SVG is emitted at a fixed pixel width rather than scaled to the container,
-// so screen coordinates and chart coordinates are the same thing. That is what
-// lets the crosshair in the template find the day under the pointer without
-// re-deriving the projection in JavaScript.
+// for legibility: 150 history days at histPx plus a forecast at fcPx needs more
+// room than a column gives it, and squeezed to fit, the forecast collapses to a
+// few dozen pixels with every line on top of the others.
+//
+// It is NOT what makes the crosshair work, though this comment said so for a
+// long time. `fromEvent` in the template multiplies the pointer offset by
+// viewBox.width / rect.width before looking up the day, so it already survives
+// any uniform scaling -- measured correct at 5.25x. Keep the fixed width, but do not defend it with the
+// coordinate-mapping reason, and do not rewrite the crosshair maths if something
+// else ever does scale the chart.
 func drawCompareChart(history []Point, days []string, lines []modelLine, show int) (template.HTML, template.JS) {
 	const (
 		histPx                 = 9.0  // one day of history

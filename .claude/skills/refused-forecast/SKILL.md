@@ -26,13 +26,29 @@ Three things it does not say, and one it says misleadingly:
 - **`day 0` is an offset into the horizon, not a date.** Day 0 is the first
   forecast day — tomorrow relative to `as_of`, not the last day of history.
 - **The entity comes from the caller**, not the validator. In `import` it is the
-  `model, entity:` prefix; in `forecast` it is the bare `entity:` prefix. A
-  message with no prefix came from somewhere that lost it.
-- **Nothing is stored.** A failed forecast fails the whole run, so there is no
-  half-written row to clean up — but in `import` it also kills the import, and
-  report 1 is only safe if it had already been written.
+  `model, entity:` prefix (with the CSV's filename in front of that); in
+  `forecast` it is the bare `entity:` prefix. A message with no prefix came from
+  somewhere that lost it.
+- **It does not say which window.** `import` forecasts the file three times —
+  `full`, `270d`, `90d` (`AGENTS.md` §2c) — but `runModel` names the model by its
+  bare name, not its `chronos2@90d` run label, so the message is the same from
+  any of them. The last `  270d window (270 days)` line printed above it is what
+  tells you. The same entity can be refused in one window and fine in another:
+  the shorter the window, the less of the campaign's live history it contains.
+- **Nothing is stored for the failed run.** A failed forecast fails the whole
+  run, so there is no half-written row to clean up.
 - **"quantiles are badly out of order" blames the forecast**, and the forecast is
   not always what is wrong. See cause 3.
+
+**What a refusal inside `import` costs you now.** `import` empties the whole
+database — `forecasts`, `runs`, `series`, `raw` — before the first model runs,
+and report 1 is written only after every window *and* the average have finished
+(`AGENTS.md` §2c). So a refusal leaves: the old database **gone**, this export's
+`series` and `raw` stored, some window runs stored, and **no report at all**.
+Report 1 is never already on disk when a model refuses; the only page that can
+survive is one from an earlier import, which is now stale beside an emptied
+database. Diagnose with `forecast -db /tmp/d.db` (which wipes nothing) and only
+re-run `import` once the cause is fixed.
 
 ## Cause 1 — the entity has nothing to forecast
 
@@ -81,6 +97,15 @@ models/.venv/bin/python models/NAME_worker.py < one-request.jsonl | head -2
 The declared list must be ascending, and the reply's columns must be in that same
 order. Chronos-2 honours `quantile_levels` in whatever order it is handed, so it
 will not correct a mistake for you; TimesFM 3.0 refuses any list but its own nine.
+
+**The report will not show you this.** Every drawn line now carries a shaded
+q10–q90 band, but `compare.go` takes the band from the *positions* `q[0]` and
+`q[len-1]` and the median from the middle position — and `checkForecast` has
+already sorted each day ascending. So the page draws a correct-looking band from
+values whose stored labels are wrong. It surfaces in `accuracy` instead, where
+`forecast_accuracy` joins `low` and `high` on the literal values 0.1 and 0.9:
+a mislabelled grid reports `in range 0%`, or an interval far too narrow or wide
+for the model.
 
 ## Cause 4 — no answer at all
 

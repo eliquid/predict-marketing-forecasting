@@ -21,6 +21,14 @@ them. `runs` and `forecasts` cannot — they are predictions made before the day
 happened, and re-running the model today does not reproduce them. When a repair
 forces a choice, keep `runs` and `forecasts`.
 
+**Which is why no repair here runs `import`.** `import` empties `forecasts`,
+`runs`, `series` and `raw` before it stores anything (`clearDatabase`, called
+from `importOne` — an import is a fresh account, `AGENTS.md` §2c). Running it to
+"rebuild" a damaged table destroys the one part of the file that cannot be
+rebuilt. Where a repair below needs data re-read from a CSV it uses `forecast
+-series NAME`, which writes the same `series` and `raw` rows and touches nothing
+else.
+
 Start here, always:
 
 ```bash
@@ -113,10 +121,18 @@ sqlite3 /tmp/repair.db "EXPLAIN QUERY PLAN
   SELECT COUNT(*) FROM forecast_accuracy WHERE entity='(account)';"
 ```
 
-The first line must name `forecasts_median`. `SEARCH f USING INDEX
-forecasts_median (entity=?)` is right. `SCAN f USING INDEX forecasts_median` is
-also fine — it visits only the median rows — and is what a query with no entity
-filter gets. A bare `SCAN forecasts` is the failure `AGENTS.md` §4a warns about.
+The first line must name `forecasts_median`. Measured on a database written by
+the current build, it is:
+
+```
+|--SEARCH f USING COVERING INDEX forecasts_median (entity=?)
+```
+
+`SEARCH f USING INDEX forecasts_median (entity=?)` — without `COVERING` — is
+equally right; whether SQLite can answer from the index alone depends on the
+columns asked for. `SCAN f USING INDEX forecasts_median` is also fine, it visits
+only the median rows, and is what a query with no entity filter gets. A bare
+`SCAN forecasts` is the failure `AGENTS.md` §4a warns about.
 
 **Before changing the view or the index yourself**, note this is the reason a
 `schemaVersion` bump is not enough: put the `DROP … IF EXISTS` ahead of the
@@ -161,9 +177,9 @@ export has one campaign per day and so produces no campaign split at all, leavin
 the per-campaign entities frozen at the older import's values. If the shape of the
 export changed, assume the whole series is suspect rather than trusting the query.
 
-Repair — re-import the corrected CSV under the same name. A current binary
-replaces the dataset on its own, so the manual delete is only needed if you are
-stuck on an older one:
+Repair — re-read the corrected CSV under the same name **with `forecast`, not
+`import`**. A current binary replaces the dataset on its own, so the manual
+delete is only needed if you are stuck on an older one:
 
 ```bash
 ./predictmarketing forecast CORRECTED.csv -series NAME -db /tmp/repair.db
@@ -172,7 +188,9 @@ stuck on an older one:
 ```
 
 Nothing references `series`, so `runs` and `forecasts` survive untouched — which
-is the point: the forecasts are the part you cannot rebuild. Re-check the orphan
+is the point: the forecasts are the part you cannot rebuild. `import` here would
+wipe them; that is the whole reason this step is a `forecast`. It does cost one
+extra `runs` row, which §4 below removes if it matters. Re-check the orphan
 query, `PRAGMA integrity_check` and `PRAGMA foreign_key_check` afterwards.
 
 ---
@@ -183,6 +201,18 @@ Nothing dedups a run. `saveRun` always inserts a fresh id, `input_sha256` is
 recorded and never read back, and `accuracy`'s `days` column is a row count. So
 forecasting the same file with the same model twice stores the whole thing twice
 and doubles the sample.
+
+**Two things narrow when this can happen now.** `import` empties the database
+first, so repeated imports no longer pile up (`AGENTS.md` §2c) — a doubled sample
+comes from repeated `forecast` runs, or from a file written before that change.
+And `import` stores the window in the model name (`chronos2@90d`, not
+`chronos2`), so the six window runs of one import are distinct by construction
+and are not what this query is looking for.
+
+**The query groups by `model`, so it cannot see across that naming.** A
+`chronos2@full` from `import` and a `chronos2` from `forecast` over the same file
+are two rows in `accuracy` however identical their `input_sha256`. That is a gap
+in the detection, not in the data: decide by hand which one you meant to keep.
 
 Detect:
 
@@ -244,4 +274,6 @@ more than it said is worse than the fault.
 - **Substitute for a backup.** There are none, deliberately — the CSV exports are
   the thing worth keeping (`sqlite-optimization`, project notes). If the exports
   are gone too, `raw` is the last copy of them and must not be deleted to fix
-  anything.
+  anything. Note that the exports rebuild `raw` and `series` only: since `import`
+  wipes, a `cp pm.db` taken **before** an import is the only thing that brings
+  back `runs` and `forecasts`.

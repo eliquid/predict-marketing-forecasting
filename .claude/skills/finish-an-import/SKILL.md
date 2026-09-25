@@ -9,6 +9,20 @@ description: Work out what a half-finished, interrupted or partly failed import 
 do when it stops partway. Read §2c first — the step order below is its order, and
 the reason the CSV moves before training rather than after is there.
 
+**Read this before you re-run anything.** `import` **empties the whole database**
+— `forecasts`, `runs`, `series`, `raw` — on the first file of a batch, once that
+file has parsed (`clearDatabase`, called from `importOne`). An import is a fresh
+account, not an addition. So "re-run `import` to finish it" is now "**throw away
+every forecast in the file and start over**", including the forecasts of datasets
+that have nothing to do with this import. It prints what it destroyed —
+`cleared 8 earlier run(s) from pm.db -- an import starts a fresh account` — but
+by then it has happened. `forecast` does not wipe; only `import` does.
+
+That is usually fine when the interrupted import is the only thing in the
+database and nothing has been scored against yet. It is never fine when older
+forecasts are still waiting for their actuals: those cannot be remade
+(`AGENTS.md` §4a). Copy `pm.db` aside first if you are not certain.
+
 ## First: find out where it stopped
 
 `import` leaves its state in three places. Read all three before doing anything,
@@ -21,10 +35,26 @@ sqlite3 pm.db "SELECT series_id, model, horizon, as_of, created_at
 sqlite3 pm.db "SELECT series_id, COUNT(*) FROM series GROUP BY series_id;"
 ```
 
+A finished import of one file leaves **seven runs**, in this order
+(`AGENTS.md` §2c) — plus an eighth once the fine-tune lands:
+
+```
+chronos2@full  timesfm3@full  chronos2@270d  timesfm3@270d
+chronos2@90d   timesfm3@90d   average@90d    [chronos2ft@full]
+```
+
+Fewer window rows is not necessarily damage: a window longer than the file, or
+exactly as long as it, is skipped and said out loud. A 90-day file has only
+`full`; 271 days is the first length that gives all three. What is *always*
+present on a complete import is `average@90d` — it is written last of the
+pretrained work and immediately before report 1, so it is the marker that the
+window half finished.
+
 | What you see | Where it stopped | What to do |
 |---|---|---|
-| CSV still in `data/`, no run for it | before or during a model | re-run `import` (see below) |
-| CSV still in `data/`, one model has a run | between the two models | re-run `import` (see below) |
+| CSV still in `data/`, no run for it | before or during the first window model | start over (see below) |
+| CSV still in `data/`, some window runs, no `average@90d` | part way through the windows | start over (see below) |
+| CSV still in `data/`, `average@90d` present, report 1 written | between writing report 1 and `fileAway` | move the CSV to `data/imported/` by hand, then finish the fine-tune below |
 | CSV in `imported/`, only `_models.html` | at or after the fine-tune | finish the fine-tune, below |
 | CSV in `imported/`, both reports | it finished | nothing |
 
@@ -34,13 +64,22 @@ model runs, so history in the database is not evidence that a forecast happened.
 
 ## If the CSV is still in `data/`
 
-Re-run `import`. Nothing needs undoing: `series` upserts on
-`(series_id, entity, metric, day)` and `raw` is replaced per source, so the
-second attempt overwrites rather than doubles (`AGENTS.md` §4a). The only residue
-is an extra `runs` row for whichever model got through the first time — harmless
-to `report`, which takes the newest run of each model, but it does appear a
-second time in `accuracy`'s row counts. Delete it if that matters — **forecasts
-first, run second**, and see the warning at the bottom before you do:
+There is nothing to salvage and nothing to undo: re-running `import` wipes the
+database first, so the partial runs from the first attempt go with it. Put the
+CSV back in `data/` if it is not there, and run it again.
+
+```bash
+./predictmarketing import
+```
+
+What this costs is stated above: every forecast for every series, not just the
+half-written ones. If the database holds anything you still want scored, copy it
+somewhere first and re-run against a scratch file with `-db`.
+
+There is no "extra `runs` row" to clean up after a re-run any more — the wipe
+handles it. The delete below is only for a duplicate you made yourself with
+`forecast`, which does not wipe. **Forecasts first, run second**, and see the
+warning at the bottom before you do:
 
 ```bash
 sqlite3 pm.db "PRAGMA foreign_keys=ON;
@@ -51,9 +90,11 @@ sqlite3 pm.db "PRAGMA foreign_keys=ON;
 ## If the CSV is already in `imported/`
 
 Then report 1 was written and the job stopped at the fine-tune. **Do not copy the
-CSV back into `data/` and re-import**: that re-forecasts both pretrained models
-for nothing and files a second, timestamped copy of the same export into
-`imported/`.
+CSV back into `data/` and re-import.** That empties the database — destroying the
+six window runs and the average you already paid for — re-forecasts all of them
+for nothing, and files a second, timestamped copy of the same export into
+`imported/` (`audit.csv` becomes `audit-2026-09-25-140054.csv` alongside it;
+`fileAway` never overwrites).
 
 Finish it in three steps instead.
 
@@ -90,12 +131,33 @@ Finish it in three steps instead.
    draw. `-out` is only there to keep `forecast`'s own single-model report from
    landing in `data/imported/`.
 
+   Give it the **whole file**, not a trimmed window: the fine-tune is the one
+   model trained on the data, and `import` runs it over the full history
+   (`AGENTS.md` §2c). One difference from a clean import: `forecast` stores the
+   bare model name, so this run lands as `chronos2ft`, where `import` would have
+   stored `chronos2ft@full`. `report` draws it either way, but `accuracy` groups
+   by that column, so it will be scored as its own model rather than pooled with
+   the fine-tunes of other imports.
+
 3. **Redraw.** `report` writes report 2 as soon as a run declaring
    `trained_through` is stored:
 
    ```bash
    ./predictmarketing report
    ```
+
+   It rewrites both pages from the stored runs and prints what went on each. On
+   a database from a current import that is:
+
+   ```
+   data/reports/<name>_models.html         (average@90d)
+   data/reports/<name>_with-finetune.html  (average@90d, chronos2ft)
+   ```
+
+   Six window runs are in the database and none of them is drawn — that is
+   correct, not a missing line (`AGENTS.md` §2c). If report 1 comes back naming
+   every `chronos2@…` and `timesfm3@…` instead, this database has no
+   `average@90d` and the windows never finished.
 
 ## Before you trust `data/reports/`
 
@@ -113,8 +175,10 @@ code cannot tell a one-report import from a two-report one. Check for the file.
 
 ## Resetting the data side to a clean slate
 
-Only when you actually want the history gone — `accuracy` scores against it, and
-it cannot be rebuilt from an export you no longer have (`AGENTS.md` §4a):
+`import` already empties everything, so this is only for clearing **one** dataset
+out of a database you want to keep the rest of. Only when you actually want that
+history gone — `accuracy` scores against it, and it cannot be rebuilt from an
+export you no longer have (`AGENTS.md` §4a):
 
 ```bash
 sqlite3 pm.db "PRAGMA foreign_keys=ON;

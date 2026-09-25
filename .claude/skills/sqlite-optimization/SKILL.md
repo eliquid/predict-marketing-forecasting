@@ -1,6 +1,6 @@
 ---
 name: sqlite-optimization
-description: Use when tuning SQLite. Apply production safety checks.
+description: General SQLite tuning and production-safety reference, plus what this project already decided. Use when touching Predict Marketing's schema, a pragma, an index or a query plan, or when investigating a slow query, SQLITE_BUSY or WAL growth.
 ---
 
 # SQLite Optimization
@@ -169,11 +169,13 @@ checklist should come back clean apart from the three items below that are
 deliberately not met — contexts, a connection pool and backups. What the audit
 changed, and what to leave alone:
 
-- **`foreign_keys` is on**, set in the DSN in `openDB` so it reaches every
-  connection the driver opens rather than only the first. `forecasts` has always
-  declared `FOREIGN KEY (run_id) REFERENCES runs(id)`; SQLite defaults the pragma
-  off, so for a long time that reference was decorative. An earlier version of
-  this note claimed the project had no foreign keys at all. That was wrong.
+- **`foreign_keys` is on and `busy_timeout` is 10000**, both set in the DSN in
+  `openDB` so they reach every connection the driver opens rather than only the
+  first (Section 2's example says 5000; this project measured and chose 10s).
+  `forecasts` has always declared `FOREIGN KEY (run_id) REFERENCES runs(id)`;
+  SQLite defaults the pragma off, so for a long time that reference was
+  decorative. An earlier version of this note claimed the project had no foreign
+  keys at all. That was wrong.
 - **`synchronous` is left at the driver's default of FULL**, deliberately. This
   writes once per forecast and is not latency-bound, so there is nothing to buy
   by weakening durability. Section 1 asks for the choice to be recorded: this is
@@ -197,9 +199,31 @@ changed, and what to leave alone:
 - **No contexts** on queries, against Section 4's advice. There is no request
   lifecycle and nothing to cancel in a CLI that runs one command and exits, so
   `QueryContext` everywhere would be churn. Revisit only if this ever serves.
-- **Backups are deliberately absent** (Section 7). Everything in the database is
-  derived from the CSV exports and can be rebuilt by re-importing them, so the
-  exports are the thing worth backing up, not this file.
+- **Backups are deliberately absent** (Section 7), and the reason given for that
+  is only half true. `raw` and `series` are derived from the CSV exports and can
+  be rebuilt by re-importing them. `runs` and `forecasts` cannot: they are
+  predictions made before the days happened. Re-importing does not restore them —
+  it destroys them, because `import` calls `clearDatabase` and empties all four
+  tables before it stores anything (`AGENTS.md` §2c). So the exports remain the
+  thing worth keeping, but "no backup needed, just re-import" is wrong about the
+  half of the file that matters. `cp pm.db` before an import is the only copy of
+  a forecast history. The `db-repair` skill is written around this and uses
+  `forecast -series NAME` wherever it needs data re-read, never `import`.
+
+- **Storage replaces; it does not merge.** `saveData` and `saveRaw` each delete
+  the whole `series_id`/`source` before inserting, so the two tables agree by
+  construction and a re-import under the same name discards the previous dataset
+  (`AGENTS.md` §4a). An earlier upsert-only `saveData` is what let `series` become
+  the union of every import ever done while `raw` was only the newest file, and
+  `forecast_accuracy` joins `series`, so those disowned rows kept being scored.
+
+- **Nothing vacuums, and nothing needs to.** `clearDatabase` deletes four whole
+  tables in one transaction on every import, and `auto_vacuum` is 0 (NONE), so
+  freed pages go on the freelist and the file keeps its high-water mark rather
+  than returning space to the OS. That is the right trade here — the next import
+  refills them immediately. Measured on a 300-day two-campaign export after one
+  wipe-and-reimport cycle: 278 pages of 4096 bytes, 24 of them free. Section 5's
+  warning about `VACUUM` applies: do not add one.
 
 Non-finite values are worth knowing about, because the database is not the guard:
 SQLite converts a NaN bind to NULL, which `value REAL NOT NULL` then rejects, but

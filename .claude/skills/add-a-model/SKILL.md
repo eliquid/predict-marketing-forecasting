@@ -8,16 +8,39 @@ description: Wire another forecasting model into Predict Marketing. Use when add
 Read `AGENTS.md` §4 first — it defines the protocol this depends on.
 
 The design claim being tested is: **a new model costs one Python file and one
-line of Go.** That line makes it available to `forecast -model NAME`, to
-`models`, and to `report`, which redraws whatever runs are stored. If you find
-yourself editing a second Go file to make the *forecast* work, stop; something
-is wrong with the change, not with the rule.
+line of Go.** That line makes it available to `forecast -model NAME` and to
+`models`. If you find yourself editing a second Go file to make the *forecast*
+work, stop; something is wrong with the change, not with the rule.
 
-The one deliberate exception is the recurring job: `import` runs a hard-coded
-list (`[]string{"chronos2", "timesfm3"}` for report 1, then `chronos2ft`) rather
-than everything in the `models` map, because report 2 exists only for the model
-that has to be trained first. A new pretrained model that should run on every
-import needs its name in that list in `import.go` too.
+**It does not make the model appear in a report.** `report` never starts a
+worker — it re-renders stored runs (`rerender.go`) — and since the three-window
+change it draws only `average@90d`, plus the fine-tune on report 2
+(`AGENTS.md` §2c). Measured: a database holding six window runs, `average@90d`
+and a separate `chronos2` run redrew as
+`data/reports/audit_models.html  (average@90d)` and nothing else. A new model is
+**stored and scored by `accuracy`**, which is where its answer actually shows up.
+Do not read an absent line as a broken worker.
+
+The one deliberate exception to the one-line rule is the recurring job: `import`
+runs a hard-coded list (`[]string{"chronos2", "timesfm3"}` for report 1, then
+`chronos2ft`) rather than everything in the `models` map, because report 2 exists
+only for the model that has to be trained first. A new pretrained model that
+should run on every import needs its name in that list in `import.go` too.
+
+**Adding a name to that list costs more than one run.** The list sits inside the
+window loop, so each name runs once per window the file is long enough for — up
+to three (`full`, `270d`, `90d`), stored as `NAME@full` and so on. It also joins
+`average@90d`, which is the mean of every pretrained run in the 90-day window and
+is the one line both reports draw. So a weak new model does not add a line you
+can ignore; it moves the recommendation. Two things about `averageRun` to know
+before you do it:
+
+- it takes the quantile grid from the **first** run in that window and
+  **silently drops** any run whose grid differs, so a model with its own
+  quantiles is excluded from the average without a word;
+- it excludes `chronos2ft` deliberately, for leakage (`AGENTS.md` §4c) — a new
+  model trained on the user's data belongs on that side of the line too, which
+  means `import.go`'s report-2 path, not the pretrained list.
 
 ## Steps
 
@@ -66,29 +89,38 @@ import needs its name in that list in `import.go` too.
    either property. Check both right after the first stored run:
 
    ```bash
-   sqlite3 pm.db "SELECT COUNT(*), SUM(inside_range IS NULL)
-                  FROM forecast_accuracy WHERE model='yourmodel' AND actual IS NOT NULL;"
+   sqlite3 /tmp/yours.db "SELECT COUNT(*), SUM(inside_range IS NULL)
+                  FROM forecast_accuracy WHERE model LIKE 'yourmodel%' AND actual IS NOT NULL;"
    ```
 
-   The second number must be 0. Note `np.arange(0.1, 1.0, 0.1)` gives exact 0.1
-   and 0.9 but a 0.3 of `0.30000000000000004` — use stored literals, not `arange`.
+   The second number must be 0, and the first must not be 0 — a count of 0 means
+   no forecast day has an actual yet and the check proved nothing. `LIKE` rather
+   than `=` because `import` stores the window in the name (`yourmodel@90d`)
+   while `forecast` stores it bare (`AGENTS.md` §2c). Work on a scratch `-db`;
+   never on the repo's own `pm.db`.
+
+   Note `np.arange(0.1, 1.0, 0.1)` gives exact 0.1 and 0.9 but a 0.3 of
+   `0.30000000000000004` — use stored literals, not `arange`.
 
 4. **Add one line** to the `models` map in `worker.go`:
    ```go
    "yourmodel": "models/yourmodel_worker.py",
    ```
 
-   That map governs `forecast`, `models` and `report`. It does **not** govern
-   `import`, which names its models directly (`import.go` runs `chronos2` and
-   `timesfm3` for report 1, then `chronos2ft` for report 2). A new pretrained
-   model added only to the map will never run on the recurring job.
+   That map is what `startWorker` looks in, so it governs `forecast`, `models`
+   and `import`. It does **not** govern `report`, which starts no worker at all.
+   And it does not make `import` run the model: `import.go` names its models
+   directly (`chronos2` and `timesfm3` per window, then `chronos2ft`), so a new
+   pretrained model added only to the map will never run on the recurring job.
 
 5. **Verify.**
    ```bash
    ./predictmarketing models        # your model appears with its real capabilities
-   ./predictmarketing forecast testdata/example.csv -model yourmodel -horizon 7
+   ./predictmarketing forecast testdata/example.csv -model yourmodel -horizon 7 \
+       -db /tmp/yours.db -out /tmp/yours.html
    go test ./...
    ```
+   `-db` and `-out` keep the trial out of the real database and out of `data/`.
 
 ## The acceptance test
 

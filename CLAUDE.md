@@ -88,8 +88,10 @@ Several things moved, so older notes may mislead:
 - **`data/` and `pm.db` are anchored to the install**, like `models/` always
   was (`defaultPath`). Never reintroduce a bare relative default: it splits the
   forecast history across databases and `accuracy` silently loses it.
-- **Reports are written to `data/reports/`**, never beside the export: `data/`
-  has to show at a glance what is still waiting to be read.
+- **`import` and `report` write to `data/reports/`**, never beside the export:
+  `data/` has to show at a glance what is still waiting to be read. (`forecast`
+  is the exception and always was — its single-model page lands next to the CSV
+  unless `-out` says otherwise.)
 - **Storing and modelling are separate decisions** (`AGENTS.md` §2a1). Every
   campaign in the export is stored in full — `raw`, `series`, and the `(account)`
   total. Only the campaigns the export's status column says are **switched on as
@@ -114,8 +116,10 @@ Several things moved, so older notes may mislead:
   actuals. `forecast` does not wipe and is the route to a scoreable history.
 - **Storage replaces, it does not merge.** `saveData` and `saveRaw` both delete
   the whole `series_id`/source before inserting, so `series` and `raw` always
-  describe the same file and a re-import — including one for a different account
-  under the same name — discards the previous dataset. Runs and forecasts survive.
+  describe the same file and re-running `forecast` on a newer export — including
+  one for a different account under the same name — discards the previous
+  dataset. Runs and forecasts survive *that*; they do not survive an `import`,
+  which wipes them too (the bullet above).
 - **The view and the indexes live in `derivedObjects`, not `schema`.** They are
   compared and rebuilt on every open, so changing one needs no `schemaVersion`
   bump — and putting a new one back in `schema` behind `IF NOT EXISTS` reinstates
@@ -134,9 +138,9 @@ Several things moved, so older notes may mislead:
   rationale expired when the report went down to one or two (`AGENTS.md` §2c).
   Nine quantiles were always stored; only the median was ever drawn.
 - **The comparison chart is fixed-width inside a scroller, not scaled to fit** —
-  for **legibility**, not for the crosshair. `fromEvent` already divides by the
-  viewBox-to-rect ratio, so the crosshair survives any uniform scaling (measured
-  at 5.25x). Keep the fixed width; do not defend it with the coordinate-mapping
+  for **legibility**, not for the crosshair. `fromEvent` scales the pointer
+  offset by `viewBox.width / rect.width` before looking up the day, so the
+  crosshair survives any uniform scaling (measured at 5.25x). Keep the fixed width; do not defend it with the coordinate-mapping
   reason, which is false (`AGENTS.md` §2c).
 - **`import` is the recurring job now** (`AGENTS.md` §2c): `data/` in,
   two comparison reports out, CSV filed into `data/imported/`. It refuses under
@@ -150,7 +154,8 @@ Several things moved, so older notes may mislead:
   the 32-day model floor.
 - **The average is the 90-day window, not all of them.** A walk-forward backtest
   over 31 origins had the 90-day window beating the whole file and 270 days at
-  **all 16 horizons** across both levels, by ~1.7 points — about 2.5x the gap
+  **every one of the 7 horizons and the pooled total, at both levels — 16 of
+  16**, by ~1.7 points — about 2.5x the gap
   between the two models. On a file of exactly 90 days the 90d window is skipped
   as a duplicate, so the average falls back to `full`, which is the last 90 days
   there.
@@ -176,8 +181,11 @@ Several things moved, so older notes may mislead:
   page has not got.
 
 Columns are sorted into forecast / setting / rate / identifier / text by rule
-(`AGENTS.md` §4b), and the tool prints which rule it applied to each. When
-something is "missing" from a forecast, read that output before suspecting a bug.
+(`AGENTS.md` §4b). `forecast` prints which rule it applied to each; **`import`
+prints only the `forecasting:` line** and nothing about the columns it set
+aside. When something is "missing" from a forecast, read that output before
+suspecting a bug — and on the recurring job, notice that a demoted column simply
+stops appearing in that list.
 
 That classification is also what decides the **campaign column**: only a label
 qualifies — a text column, or a numeric one `looksLikeIdentifier` accepts

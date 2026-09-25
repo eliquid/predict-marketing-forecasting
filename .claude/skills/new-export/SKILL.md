@@ -1,6 +1,6 @@
 ---
 name: new-export
-description: Import a fresh ad-platform export, forecast it, and score the forecasts made previously. Use for the recurring weekly or daily run on a new Google Ads CSV.
+description: Import a fresh ad-platform export and forecast it, or build a scoreable forecast history with the single-model command instead. Use for the recurring weekly or daily run on a new Google Ads CSV.
 ---
 
 # Importing a new export
@@ -23,9 +23,15 @@ forecasting from the partial one came out **28% low on both models**.
 Check before importing — this is not something the tool does for you:
 
 ```bash
-awk -F, 'NR>1{c[$1]+=$10} END{for (d in c) print d, c[d]}' "Campaign report.csv" \
+awk -F, 'NR==1{for(i=1;i<=NF;i++) if($i=="Cost") c=i; next}
+         c{t[$1]+=$c} END{for (d in t) print d, t[d]}' "Campaign report.csv" \
   | sort | tail -8
 ```
+
+Find the column by its **header**, never by a fixed position: exports differ in
+how many columns they carry, and a hardcoded field number on the wrong file adds
+up a column of empty strings and prints a tidy `0` for every day — which is the
+one output this check cannot tell from a real collapse.
 
 A last day far below the ones before it means the export ran too early.
 Re-download it ending on yesterday.
@@ -64,22 +70,30 @@ Reports go to `data/reports/`.
   average@90d: the mean of chronos2@90d and timesfm3@90d
 ```
 
+**Read the `forecasting:` line every time.** It is the only place `import` names
+the columns it is modelling — unlike `forecast`, it prints nothing about the
+columns it set aside as text, identifiers or settings (`AGENTS.md` §4b). A column
+demoted to text because a few cells stopped parsing just quietly leaves that
+list.
+
 A window longer than the file is **skipped and announced**, not an error, so a
 short export still produces everything it can. On a file of exactly 90 days the
 90d window is skipped as a duplicate of the whole file and the average falls back
 to `full`, which is the last 90 days there.
 
 **Why only one line.** A walk-forward backtest over 31 daily origins had the
-90-day window beating the whole file and 270 days at all 16 horizons, and the
-average beating both individual models at account level. The other five runs are
-in the database for `accuracy` to score — they are just not what the report
-recommends. See `AGENTS.md` §2c.
+90-day window beating the whole file and 270 days at every horizon and at both
+levels, and the average beating both individual models at account level
+(17.33% MAPE). The other five runs are in the database for `accuracy` to score —
+they are just not what the report recommends. See `AGENTS.md` §2c.
 
 At least 90 days is required; 365 is better, 730 best. All three windows need
 **271** days.
 
-The steps below are the manual equivalent, for when you want one model, one
-metric, or a horizon the import does not use.
+The steps below are **not** what `import` does. They are the single-model command
+underneath it, for when you want one model, one metric, or a horizon the import
+does not use — and, because they leave the database alone, they are the only
+route to a forecast history `accuracy` can score.
 
 ## If you only want the reports back
 
@@ -96,9 +110,14 @@ comes back without its `%` sign; re-importing is what restores that. See
 Read `AGENTS.md` §2a for how a campaign export is read, and §4a for what the
 database holds.
 
-This is the recurring job: a newer CSV arrives, and it does two things at once —
-it supplies the actuals for forecasts already stored, and it is the basis for the
-next forecast.
+These steps use `forecast`, not `import`, and that is the whole reason they are
+here: `forecast` **does not empty the database**. A newer CSV run through it does
+two things at once — it supplies the actuals for the forecasts already stored,
+and it is the basis for the next one. Put them in a database of your own with
+`-db` and the history accumulates, which is what makes step 3 possible at all.
+Run `import` against that same file and both halves are lost: the wipe deletes
+the forecast you were about to score before it stores the actuals that would
+score it.
 
 ## Steps
 
@@ -140,9 +159,13 @@ next forecast.
    it as a bug:
 
    ```bash
-   awk -F, 'NR>1 && $1==d {print $3": "$2}' d="$(awk -F, 'NR>1{print $1}' \
-       "Campaign report.csv" | sort | tail -1)" "Campaign report.csv" | sort
+   awk -F, 'NR==1{for(i=1;i<=NF;i++){if($i=="Campaign")n=i; if($i=="Campaign status")s=i}; next}
+            $1>d{d=$1; delete st} $1==d{st[$n]=$s}
+            END{print "as of "d; for (k in st) print "  "k": "st[k]}' "Campaign report.csv"
    ```
+
+   Headers again, not field numbers, and only the file's **last day** — that is
+   the day the rule is applied on (`AGENTS.md` §2a1).
 
    Its history is still queryable — `SELECT ... FROM series WHERE entity=...`
    returns every day of it. Only the forecast is absent, and only because
@@ -164,6 +187,13 @@ next forecast.
 
    `in range` should sit near 80%: that is how often the actual landed inside the
    q10–q90 band. Much below means the bands are too narrow to trust.
+
+   **Read `days` before you read anything else.** It is a count of scored rows,
+   not a date range, and nothing deduplicates runs, so the same forecast made
+   twice counts twice. One 7-day backtest is seven observations, and `-by-day`
+   splits those into seven rows of **one** — every cell then prints 0% or 100%,
+   which reads like a finding and is a coin flip. Below roughly ten observations
+   per row, read `avg error` and ignore `in range` (`AGENTS.md` §4a).
 
 4. **Sanity-check the aggregation.** Campaign forecasts are produced
    independently of the account, so they will not sum exactly — a few percent is

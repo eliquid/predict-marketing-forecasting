@@ -185,7 +185,7 @@ to use it.
 data/                  <- put your exported CSV here
 data/imported/         <- it moves here once it has been read
 data/reports/          <- the HTML reports land here
-pm.db                  <- everything read and every forecast made, kept here
+pm.db                  <- the export just read and the forecasts made from it
 ```
 
 `data/` itself therefore shows, at a glance, exactly what has not been imported
@@ -193,10 +193,10 @@ yet: if there is a CSV sitting in it, it still needs reading.
 
 All three live **next to the program**, not next to wherever your shell happens
 to be. Run `predictmarketing import` from anywhere and it reads the same folder
-and writes the same database — which matters, because `accuracy` scores the
-forecasts it finds there, and a second database somewhere else would silently
-have less history than you think. `-data` and `-db` override it if you want
-separate ones on purpose.
+and writes the same database — which matters, because a second database
+somewhere else would hold a different history, and `accuracy` only ever scores
+the one you point it at. `-data` and `-db` override it if you want separate ones
+on purpose.
 
 ### Getting the file out of Google Ads
 
@@ -235,10 +235,11 @@ half-finished day are the same number.
 So: end the range on yesterday. Not today at 9am, not today at 5pm, not "today
 so far". Yesterday.
 
-That last one matters more than it looks. Despite the name, the Excel option is
-**UTF-16 encoded and tab-separated**, so it is not a CSV in any sense the tool
-can read. It is refused, with a message telling you the file looks
-tab-separated. Re-download it as plain `.csv` and it loads.
+**Point 4 is the other trap, and it is the one that stops the import dead.**
+Despite the name, the Excel option is **UTF-16 encoded and tab-separated**, so it
+is not a CSV in any sense the tool can read. It is refused, with a message
+telling you the file looks tab-separated. Re-download it as plain `.csv` and it
+loads.
 
 If you already have an Excel-format file and would rather convert than
 re-download:
@@ -268,7 +269,7 @@ That one command:
 3. **Empties the database.** An import is a new account, so everything already
    stored is deleted first — including past forecasts. This happens *after* the
    CSV parses, so a malformed export cannot destroy your data and give nothing
-   back. See **Scoring forecasts** below for what this costs.
+   back. See **Checking the models against reality** below for what this costs.
 4. **Forecasts three windows** — the whole file, its last 270 days and its last
    90 — with both pretrained models, storing all of them, and **writes report 1**
    into `data/reports/` showing the actuals and one forecast line: the 90-day
@@ -281,7 +282,7 @@ That one command:
    average line plus `chronos2ft`, which is trained on the **whole file**.
    Training runs to completion — no time limit. Two
    runs measured on the machine above, both 2,000 steps: **about 17 minutes**
-   (1,042s) on a three-year, fifteen-campaign export, and about **9 minutes**
+   (1,042s) on a three-year, seven-series export, and about **9 minutes**
    (545s) on the small `examples/05-campaigns.csv`. Your own run records its
    time in `models/finetuned.json`. **Report 1 is already on disk**, so read it
    while this runs.
@@ -326,8 +327,8 @@ hides its band too.
 Why one line rather than six: a walk-forward backtest over 31 daily origins on a
 real account had the 90-day window beating both the whole file and 270 days at
 **every horizon**, and the average of the two models beating either alone. The
-other five runs are still in the database — they are simply not what the page
-recommends.
+six window runs it was averaged from are still in the database — they are simply
+not what the page recommends.
 
 Above each chart: what was actually spent over the window drawn, and what each
 drawn line expects over the days ahead. They follow the dropdowns, so they always
@@ -344,10 +345,10 @@ chart: the date, then every model's number with a dot on each line, or the
 actual figure if you are back in the observed part. **Click** to pin a day so it
 stays while you look; click again to release.
 
-**The legend is a set of switches.** Click `actual`, `chronos2`, `timesfm3` or
-`chronos2ft` to take that line off the chart — it disappears from the plot, its
-end label, and the readout together. Useful when two models sit on top of each
-other and you want to see one of them.
+**The legend is a set of switches.** Click `actual`, `average@90d`, or — on
+report 2 — `chronos2ft@full`, and that line comes off the chart: it disappears
+from the plot, its shaded band, its end label, and the readout together. Useful
+on report 2, where the fine-tune often sits on top of the average.
 
 Two dropdowns choose what you are looking at:
 
@@ -356,7 +357,8 @@ Two dropdowns choose what you are looking at:
 
 The metric list follows the file: forecast three columns and you get three
 choices, forecast seven and you get seven. Under the chart is the same forecast
-as numbers, one column per model, so you can see exactly where they disagree.
+as numbers, one column per drawn line — so on report 2 you can see exactly where
+the fine-tune and the average disagree.
 
 At the foot of every page is the provenance: each model, its weights, the
 revision, the checksum, and — for the fine-tuned one — the last day it was
@@ -380,8 +382,10 @@ same names, in a moment. **Nothing is forecast, nothing is retrained and nothing
 is written to the database** — which is the point, since retraining the third
 model is the part measured in minutes.
 
-It draws the newest run of each model, and only runs made from the same last day
-of real data, so the lines on a chart are always comparing like with like.
+It draws what `import` draws — the average on report 1, the average and the
+fine-tune on report 2 — taking the newest run of each, and only runs made from
+the same last day of real data, so the lines on a chart are always comparing
+like with like. Report 2 is written only if a fine-tuned run is stored.
 
 ```
 -series NAME    which dataset (default: every one that has forecasts)
@@ -717,10 +721,10 @@ models/.venv/bin/python models/finetune.py "your-export.csv" --steps 2000
 
 It runs every step it was given; there is no time limit. How long that takes
 depends on both the step count and the file — 2,000 steps measured 1,042s on a
-three-year, fifteen-campaign export and 545s on the small example, so allow
+three-year, seven-series export and 545s on the small example, so allow
 minutes rather than seconds and read the real figure out of
 `models/finetuned.json` afterwards. It has **not** beaten the stock models on the data tried so far
-(34.5% average error against 32.7%) — seven campaigns is very little to fine-tune
+(34.5% average error against 32.7%) — seven series is very little to fine-tune
 on. Score it with `accuracy` before relying on it.
 
 **Known-future values** means telling the model something you already know about
@@ -774,7 +778,7 @@ template.go          the HTML page
 compare.go           the two- and three-model comparison page
 compare_template.go  its HTML, dropdowns and crosshair
 rerender.go          redrawing those pages from what is already stored
-pm_test.go           one test per way this can go quietly wrong
+*_test.go            one test per way this can go quietly wrong
 
 models/
   timesfm3_worker.py   one small file each: load the model, answer requests
@@ -788,6 +792,7 @@ models/
   .venv/               the Python environment (not in git)
 
 testdata/            example CSV
+examples/            the CSVs the commands in this README run on
 assets/              vendored htmx, inlined into every report
 PLAN.md              why it is built this way
 FINDINGS-onnx.md     why the models still need Python
@@ -844,7 +849,7 @@ stuck rather than busy
 ## Testing
 
 ```bash
-go test ./...                                   # 154 test functions, 170 cases
+go test ./...                                   # 172 tests and a fuzz target, 190 cases
 go test -race -count=2 ./...                    # state leakage between tests
 go test -run '^$' -fuzz FuzzReadCSV -fuzztime 60s
 ```
@@ -883,13 +888,13 @@ and nothing gets scored.
 ```
 forecast vs actual for (account)
 
-  model      metric             days  avg error      bias  in range
-  chronos2   Clicks                7       3.8%     -0.1%       57%
-  chronos2   Cost                  7       2.3%     +0.7%       86%
-  chronos2   Impr.                 7       5.7%     +3.8%       86%
-  timesfm3   Clicks                7       3.7%     -0.3%       57%
-  timesfm3   Cost                  7       2.0%     -0.3%       86%
-  timesfm3   Impr.                 7       5.8%     +4.0%       86%
+  model            metric             days  avg error      bias  in range
+  chronos2         Clicks                7       3.8%     -0.1%       57%
+  chronos2         Cost                  7       2.3%     +0.7%       86%
+  chronos2         Impr.                 7       5.7%     +3.8%       86%
+  timesfm3         Clicks                7       3.7%     -0.3%       57%
+  timesfm3         Cost                  7       2.0%     -0.3%       86%
+  timesfm3         Impr.                 7       5.8%     +4.0%       86%
 
   21 forecast days are still waiting for their actuals.
   avg error is how far off, ignoring direction. bias is the direction:
