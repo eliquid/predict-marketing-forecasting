@@ -1,7 +1,23 @@
-# Predict Marketing
+# Predict Marketing - Lite Version
 
 Forecast a series of daily numbers with **TimesFM 3.0** (Google) or **Chronos-2**
 (Amazon), store the result, and get a chart you can open in a browser.
+
+# This lite version is very simple and also very basic.
+
+In a nutshell, you supply the data in a CSV format ( not Excel CSV, real CSV ) in
+the data folder up until yesterday ( a full day of data ), the script runs, and it
+produces a forecast of the next 7 days on the average of 2 models and a fine tuned
+model of just your data... so 2 forecasts.
+
+Currently tested and working for data from Google Ads, on spend and impressions
+and clicks.
+
+A paid version of this script is being worked on that will allow you to auto import
+from Google, Meta, and MSN Ads, and predict on more metrics like Conversions, 
+Revenue, CPA, CTR, and more with anomaly detection and warnings via Telegram.
+
+---
 
 The code is Go. The models run unmodified in Python behind a small adapter.
 Switching between them is one word on the command line.
