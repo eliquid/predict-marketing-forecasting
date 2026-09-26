@@ -377,6 +377,10 @@ func cmdForecast(args []string) error {
 	for _, line := range exclusionLines(data) {
 		fmt.Println(line)
 	}
+	if len(data.Renamed) > 0 {
+		fmt.Printf("  renamed during this period, kept as one series: %s\n",
+			strings.Join(data.Renamed, ", "))
+	}
 	if len(data.NotMetrics) > 0 {
 		fmt.Printf("  numeric, but not a metric this forecasts: %s\n",
 			strings.Join(data.NotMetrics, ", "))

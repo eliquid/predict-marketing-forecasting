@@ -232,6 +232,19 @@ Several things moved, so older notes may mislead:
   matches it.** The second case keeps a plain `date,v` series working — filtering a
   file with one number in it refuses the simplest input and buys nothing. Never
   "fix" that by making the list mandatory.
+- **A renamed campaign stays one series when the export has an ID** (`AGENTS.md`
+  §2a3). Grouped by the ID, labelled with the name from its **last day**. This only
+  engages when a rename actually happened: `findGroupColumn` prefers the name
+  column, and a rename is what makes it fail the distinct-count test. Both real
+  exports still group by name, unchanged. Two defects it fixed: grouping by ID used
+  to store entities as **raw numbers** (dropdowns offered `111`), and with no ID a
+  single rename **refused the whole export**. Without an ID nothing is guessed — the
+  old name is a campaign that stopped.
+- **The label column is chosen by shape, and must not be required to be unique
+  within a day.** Two campaigns can share a name; that requirement fell back to
+  bare IDs for exactly the file that needed a name most. The test is: no ID carries
+  two values on one day, then most-distinct-names wins. Two IDs wanting one name
+  become `Sale (111)` / `Sale (222)` — never folded together.
 - **`looksLikeIdentifier` is not redundant and must not be removed.** It keeps
   `Campaign ID` out of the sums (fifteen IDs added gave 327,129,489,016) *and* is
   what lets an ID column qualify as the campaign column at all.

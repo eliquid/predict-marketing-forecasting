@@ -700,6 +700,61 @@ it at the rename, or re-export a range over which the campaign set is constant.
 The message's advice is honest for the commoner cause (a column the tool could
 not pick between) and a dead end for this one.
 
+## 2a3. Renamed campaigns
+
+A campaign can be renamed mid-period. Its **ID** does not change, so an export
+that carries one can keep the history as a single series; an export without one
+cannot, and the tool does not guess.
+
+**How the column is chosen.** `findGroupColumn` prefers a text column with exactly
+as many distinct values as there are rows per day, so on a file with no rename the
+name column wins and none of this engages — measured on a 1,099-day Google export
+and a 116-day Meta one, both still `split by "Campaign"` / `"Campaign name"` with
+no labelling at all. A rename is what changes it: the name column then carries an
+extra value across the file, fails that test, and the ID column (which still has
+exactly rows-per-day values) is chosen instead.
+
+**With an ID column.** Rows are grouped by the ID, and each group is labelled with
+the name it carried on **the last day it appears** — what the campaign is called
+now. Every earlier row is relabelled to it, so the series is continuous.
+`entityLabels` does this and also reports the change:
+
+```
+renamed during this period, kept as one series: "Summer Sale" -> "Autumn Sale"
+```
+
+Before this, grouping by the ID stored the entities as **raw numbers** — a report's
+dropdown offered `111` and `222` instead of campaign names.
+
+**Choosing the name column** is by shape, not by name. It must name one thing (no
+ID carrying two different values for it on the same day); among the columns that
+manage that, the one whose names tell the **most** campaigns apart wins, and file
+order breaks a tie. That is what separates `Campaign` (fifteen names) from
+`Currency code` (one) without either being written into the code. It is
+deliberately **not** required to be unique within a day: two campaigns can
+genuinely share a name, and requiring uniqueness fell back to bare IDs for exactly
+the file that needed a name most.
+
+**Two IDs wanting one name** — a name reused after a campaign was deleted, or two
+campaigns named alike — are kept apart as `Sale (111)` and `Sale (222)`. Folding
+them together would add two campaigns' numbers into one series without a word.
+
+**Without an ID column.** There is no way to tell a rename from one campaign ending
+and another starting, and both readings are consistent with the data, so the tool
+takes the data at face value: it groups by name, and the old name is a campaign
+that stopped (§2a2). This needed a second fix — `findGroupColumn` required the
+distinct count to *equal* rows-per-day, which a rename breaks by definition, so a
+single rename **refused the whole export** (`no column has exactly 2 distinct
+values`). There is now a fallback to a column that is unique *within* each day,
+which is the property that actually matters. A measured column still cannot be
+chosen: `uniquePerDayColumn` accepts only text or an identifier, so
+`TestAMetricIsNeverTheCampaignColumn` still holds — its refusal now names the
+campaign that changed instead of blaming `Cost`.
+
+**The trainer is given the same identity.** `import` passes `--group` (the ID when
+there is one) and `--label`, so `load_series` groups by ID exactly as ingest does
+and its skipped list still prints names rather than numbers.
+
 ## 2a1. Everything is stored; only switched-on campaigns are forecast
 
 These are two separate decisions, and conflating them is the mistake to avoid.

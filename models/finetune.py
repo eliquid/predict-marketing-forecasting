@@ -110,7 +110,7 @@ def num(s, where=""):
     return -v if neg else v
 
 
-def load_series(csv_path, metrics, group_col):
+def load_series(csv_path, metrics, group_col, label_col=""):
     """One (metrics, days) matrix per group, plus the total across all of them.
 
     Only the campaigns the export says are switched on are trained on. A paused
@@ -121,6 +121,12 @@ def load_series(csv_path, metrics, group_col):
 
     The account total is the sum of every row, switched on or not, because that
     is what the account actually spent.
+
+    group_col may be an ID column, which is what keeps a renamed campaign one
+    series instead of two. label_col then says which column holds the readable
+    name, used only so the skipped list names campaigns rather than numbers --
+    grouping, running and stopped are all decided on the ID, exactly as ingest.go
+    decides them.
     """
     import numpy as np
     rows = list(csv.reader(open(csv_path)))
@@ -152,6 +158,15 @@ def load_series(csv_path, metrics, group_col):
     # so fitting the adapter to its tail of zeros spends steps on a series nobody
     # will ever see. The two sides have to agree about this or training and
     # forecasting are about different campaigns.
+    # The name each group goes by now: the one on the last day it appears.
+    label = {}
+    if label_col and label_col in ix and group_col and group_col in ix:
+        seen_day = {}
+        for r in data:
+            k = r[ix[group_col]]
+            if r[0] >= seen_day.get(k, ""):
+                seen_day[k], label[k] = r[0], r[ix[label_col]]
+
     stopped = set()
     if group_col and group_col in ix:
         last_seen = {}
@@ -169,8 +184,9 @@ def load_series(csv_path, metrics, group_col):
             continue
         out.append((k, m.astype("float32")))
     if skipped:
+        shown = sorted(label.get(k, k) for k in skipped)
         print(f"not training on {len(skipped)} switched-off, stopped or never-active "
-              f"campaign(s): {', '.join(sorted(skipped))}")
+              f"campaign(s): {', '.join(shown)}")
     return out, days
 
 
@@ -179,6 +195,8 @@ def main():
     ap.add_argument("csv")
     ap.add_argument("--metrics", default=",".join(DEFAULT_METRICS))
     ap.add_argument("--group", default="Campaign", help="column separating campaigns")
+    ap.add_argument("--label", default="", help="column holding the readable name, "
+                    "when --group is an ID column")
     ap.add_argument("--steps", type=int, default=1000)
     ap.add_argument("--batch-size", type=int, default=8)
     ap.add_argument("--context", type=int, default=512)
@@ -189,7 +207,7 @@ def main():
     metrics = [m.strip() for m in args.metrics.split(",") if m.strip()]
     base = json.load(open(os.path.join(HERE, "weights.json")))["chronos2"]
 
-    series, days = load_series(args.csv, metrics, args.group)
+    series, days = load_series(args.csv, metrics, args.group, args.label)
     trained_through = days[-1]
     print(f"training on {len(series)} series x {len(days)} days x {len(metrics)} metrics")
     print(f"data runs {days[0]} .. {trained_through}")

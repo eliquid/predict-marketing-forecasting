@@ -1116,8 +1116,13 @@ func TestFillAbsentHonoursTheNamedColumn(t *testing.T) {
 	if d.GroupBy != "Campaign ID" {
 		t.Fatalf("grouped by %q, want %q", d.GroupBy, "Campaign ID")
 	}
-	if want := []string{"22"}; !reflect.DeepEqual(d.Stopped, want) {
+	// Grouped by the ID, but named by the campaign: "22" is stored and reported as
+	// "Gone", because an ID is an identity, not something to show anyone.
+	if want := []string{"Gone"}; !reflect.DeepEqual(d.Stopped, want) {
 		t.Errorf("stopped = %v, want %v", d.Stopped, want)
+	}
+	if d.LabelBy != "Campaign" {
+		t.Errorf("labelBy = %q, want %q", d.LabelBy, "Campaign")
 	}
 
 	// A column that is forecast can never be the label, flag or no flag.
@@ -1370,5 +1375,112 @@ func TestPerUnitCostIsAveragedNotSummed(t *testing.T) {
 	// Money still adds up.
 	if got := d.Values[AccountEntity]["Cost"][0]; got != 160 {
 		t.Errorf("account Cost = %v, want 160 (100+60)", got)
+	}
+}
+
+// A campaign can be renamed. Its ID does not change, so when the export carries
+// one the history stays a single series and the name shown is the latest one.
+//
+// Both halves of this were broken. Grouped by the ID, entities were stored as raw
+// numbers, so reports and dropdowns showed "222" instead of a campaign name. And
+// findGroupColumn required a column's distinct values to *equal* the rows per day,
+// which a renamed campaign breaks by definition -- so with no ID column the whole
+// export was refused.
+func TestARenamedCampaignStaysOneSeries(t *testing.T) {
+	var b strings.Builder
+	b.WriteString("Day,Campaign,Campaign ID,Cost,Impr.,Clicks\n")
+	for i := 0; i < 120; i++ {
+		fmt.Fprintf(&b, "%s,Brand Search,111,%d,%d,%d\n", day(i), 100+i, 5000+i*7, 20+i)
+		name := "Summer Sale"
+		if i >= 60 {
+			name = "Autumn Sale"
+		}
+		fmt.Fprintf(&b, "%s,%s,222,%d,%d,%d\n", day(i), name, 60+i, 3000+i*5, 10+i)
+	}
+	d, err := readCSV(writeTemp(t, "renamed.csv", b.String()), nil, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if d.GroupBy != "Campaign ID" {
+		t.Errorf("grouped by %q; the ID is what survives a rename", d.GroupBy)
+	}
+	if d.LabelBy != "Campaign" {
+		t.Errorf("labelBy = %q, want %q", d.LabelBy, "Campaign")
+	}
+	// The name it goes by now, never the ID and never the old name.
+	if !slicesContainsFold(d.Entities, "Autumn Sale") {
+		t.Errorf("entities = %v, want the current name", d.Entities)
+	}
+	for _, gone := range []string{"222", "Summer Sale"} {
+		if slicesContainsFold(d.Entities, gone) {
+			t.Errorf("%q must not be an entity of its own", gone)
+		}
+	}
+	// One continuous series, not two half-length ones.
+	if col := d.Values["Autumn Sale"]["Cost"]; len(col) != len(d.Days) || col[0] == 0 {
+		t.Errorf("Autumn Sale has %d days and starts at %v; want %d days of history",
+			len(col), col[0], len(d.Days))
+	}
+	if len(d.Renamed) != 1 || !strings.Contains(d.Renamed[0], "Summer Sale") {
+		t.Errorf("the rename must be reported; renamed = %v", d.Renamed)
+	}
+}
+
+// Two IDs can want the same name -- a name reused after a campaign was deleted,
+// or two campaigns genuinely named alike. Folding them together would add two
+// campaigns' numbers into one series without a word, so both carry their ID.
+func TestTwoCampaignsWithOneNameAreKeptApart(t *testing.T) {
+	var b strings.Builder
+	b.WriteString("Day,Campaign,Campaign ID,Cost,Impr.,Clicks\n")
+	for i := 0; i < 120; i++ {
+		fmt.Fprintf(&b, "%s,Sale,111,%d,%d,%d\n", day(i), 100+i, 5000+i*7, 20+i)
+		fmt.Fprintf(&b, "%s,Sale,222,%d,%d,%d\n", day(i), 60+i, 3000+i*5, 10+i)
+	}
+	d, err := readCSV(writeTemp(t, "dupe.csv", b.String()), nil, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"Sale (111)", "Sale (222)"} {
+		if !slicesContainsFold(d.Entities, want) {
+			t.Errorf("entities = %v, want %q kept separate", d.Entities, want)
+		}
+	}
+	if d.Values["Sale (111)"]["Cost"][0] != 100 || d.Values["Sale (222)"]["Cost"][0] != 60 {
+		t.Error("the two campaigns' numbers were mixed together")
+	}
+}
+
+// Not every platform sends an ID. Without one there is no way to tell a rename
+// from one campaign ending and another starting, and the tool must not guess: it
+// groups by name, and the old name is simply a campaign that stopped.
+func TestWithoutAnIDTheNameIsTheIdentity(t *testing.T) {
+	var b strings.Builder
+	b.WriteString("Day,Campaign,Cost,Impr.,Clicks\n")
+	for i := 0; i < 120; i++ {
+		fmt.Fprintf(&b, "%s,Brand Search,%d,%d,%d\n", day(i), 100+i, 5000+i*7, 20+i)
+		name := "Summer Sale"
+		if i >= 60 {
+			name = "Autumn Sale"
+		}
+		fmt.Fprintf(&b, "%s,%s,%d,%d,%d\n", day(i), name, 60+i, 3000+i*5, 10+i)
+	}
+	path := writeTemp(t, "noid.csv", b.String())
+
+	d, err := readCSVFilling(path, nil, "", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.GroupBy != "Campaign" {
+		t.Errorf("grouped by %q, want %q", d.GroupBy, "Campaign")
+	}
+	if len(d.Renamed) != 0 {
+		t.Errorf("no ID, so no rename can be known: %v", d.Renamed)
+	}
+	if !slicesContainsFold(d.Stopped, "Summer Sale") {
+		t.Errorf("the old name is a campaign that stopped; stopped = %v", d.Stopped)
+	}
+	if !slicesContainsFold(d.Entities, "Autumn Sale") {
+		t.Errorf("the new name is a campaign that is running; entities = %v", d.Entities)
 	}
 }

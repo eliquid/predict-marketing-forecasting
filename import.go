@@ -194,6 +194,10 @@ func importOne(path, dir, dbPath string, horizon, history int, skipFinetune, fre
 		fmt.Printf("  %d rows per day, split by %q\n", data.RowsPerDay, data.GroupBy)
 	}
 	fmt.Printf("  forecasting: %s\n", withConcepts(data, data.Names))
+	if len(data.Renamed) > 0 {
+		fmt.Printf("  renamed during this period, kept as one series: %s\n",
+			strings.Join(data.Renamed, ", "))
+	}
 	if len(data.NotMetrics) > 0 {
 		fmt.Printf("  numeric, but not a metric this forecasts: %s\n",
 			strings.Join(data.NotMetrics, ", "))
@@ -324,12 +328,12 @@ func importOne(path, dir, dbPath string, horizon, history int, skipFinetune, fre
 
 	fmt.Printf("\n  training %s on this file, which takes a few minutes.\n", "chronos2ft")
 	fmt.Printf("  Report 1 is already written -- open it while this runs.\n")
-	if err := trainFinetune(moved, data.Names, data.GroupBy); err != nil {
+	if err := trainFinetune(moved, data.Names, data.GroupBy, data.LabelBy); err != nil {
 		fmt.Printf("\n  the fine-tune did not finish: %v\n", err)
 		fmt.Printf("  report 1 is unaffected. Train it later with:\n")
 		fmt.Printf("    models/.venv/bin/python models/finetune.py %q \\\n", moved)
-		fmt.Printf("        --metrics %q --group %q\n",
-			strings.Join(data.Names, ","), data.GroupBy)
+		fmt.Printf("        --metrics %q --group %q --label %q\n",
+			strings.Join(data.Names, ","), data.GroupBy, data.LabelBy)
 		return nil
 	}
 
@@ -557,7 +561,7 @@ func labelsOf(runs []forecastRun) []string {
 // "Impr.", "Clicks", "Campaign"), and on any other export they either stop the
 // trainer with "columns not in <file>" -- which is how this was found -- or, with
 // no matching group column, silently train on one collapsed series.
-func trainFinetune(csv string, metrics []string, groupBy string) error {
+func trainFinetune(csv string, metrics []string, groupBy, labelBy string) error {
 	root := installDir()
 	if root == "" {
 		return fmt.Errorf("cannot find the models folder")
@@ -579,6 +583,9 @@ func trainFinetune(csv string, metrics []string, groupBy string) error {
 	}
 	if groupBy != "" {
 		args = append(args, "--group", groupBy)
+	}
+	if labelBy != "" {
+		args = append(args, "--label", labelBy)
 	}
 	cmd := exec.Command(python, args...)
 	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr

@@ -648,6 +648,27 @@ second line. Force it in with `-columns "Your Column"`, which overrides the list
 entirely. A plain two-column file (`date,value`) is never filtered — there is
 nothing to choose between.
 
+### Renamed campaigns
+
+If you rename a campaign, you do not want its history to split in two.
+
+When the export includes a campaign ID, it does not: the tool tracks the campaign
+by its ID and shows it under **its current name**, with the whole history intact.
+It tells you what it noticed:
+
+```
+renamed during this period, kept as one series: "Summer Sale" -> "Autumn Sale"
+```
+
+If two campaigns end up with the same name, they are kept apart as
+`Sale (111)` and `Sale (222)` rather than added together.
+
+**Not every platform exports an ID**, and without one a rename cannot be told from
+one campaign ending and another starting — both are exactly what the data shows. So
+the tool does not guess: it goes by name, and the old name is reported as a
+campaign that stopped. If you want renames followed, include the campaign ID
+column in the export.
+
 ### Blank cells are zero
 
 Where a platform has nothing to report it may leave the cell empty, or write `-`,

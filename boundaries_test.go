@@ -429,10 +429,17 @@ func TestAMetricIsNeverTheCampaignColumn(t *testing.T) {
 	if err == nil {
 		t.Fatal("grouping by a measured column must be refused, not chosen silently")
 	}
-	for _, want := range []string{"Cost", "measured", "-by"} {
-		if !strings.Contains(err.Error(), want) {
-			t.Errorf("the refusal should mention %q, got: %v", want, err)
-		}
+	// It is still refused, and Cost is still not the campaign column -- but the
+	// reason given is now the real one. A name column that names each day's rows
+	// once is accepted even when it carries an extra value across the file, since
+	// that is what a rename looks like; the set of campaigns then differing from
+	// day to day is what actually stops this file, and saying so points at the
+	// campaign that changed rather than at Cost.
+	if !strings.Contains(err.Error(), "Renamed") {
+		t.Errorf("the refusal should name the campaign that changed, got: %v", err)
+	}
+	if strings.Contains(err.Error(), "measured") {
+		t.Errorf("Cost is not the problem here and must not be blamed: %v", err)
 	}
 
 	// Asking for it outright is refused too, and says why rather than "no column".

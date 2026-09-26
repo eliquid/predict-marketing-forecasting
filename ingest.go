@@ -54,6 +54,15 @@ type Data struct {
 	// GroupBy is the column the entities came from ("Campaign"), empty when the
 	// file has a single row per day.
 	GroupBy string
+	// LabelBy is the column holding the readable name, when GroupBy is an ID
+	// column. Empty when the group column is itself the name.
+	LabelBy string
+	// Label maps a group value to the name shown for it -- the name it carried on
+	// the last day it appears. Empty when there is nothing to translate.
+	Label map[string]string
+	// Renamed records campaigns whose name changed during the period, as
+	// "old -> new". Only an ID column can reveal this.
+	Renamed []string
 	// Values is entity -> metric -> one value per day.
 	Values map[string]map[string][]float64
 	// Inactive lists entities that are stored but not sent to a model: everything
@@ -618,6 +627,15 @@ func readCSVFilling(path string, want []string, groupBy string, fillAbsent bool)
 	}
 	d.GroupBy = group
 
+	// A campaign can be renamed. Its ID does not change, so when the export
+	// carries one the history stays a single series and the name shown is simply
+	// the latest one. Without an ID there is no way to tell a rename from one
+	// campaign ending and another starting, and the tool does not guess.
+	if group != "" && looksLikeIdentifier(group) {
+		d.LabelBy, d.Label, d.Renamed = entityLabels(header, names, numeric, rows,
+			group, rowsPerDay)
+	}
+
 	addTo := func(entity string) map[string][]float64 {
 		if _, ok := d.Values[entity]; !ok {
 			m := map[string][]float64{}
@@ -641,7 +659,11 @@ func readCSVFilling(path string, want []string, groupBy string, fillAbsent bool)
 	// vanish as an entity of its own. Refuse rather than quietly lose it.
 	if groupCol >= 0 {
 		for _, rw := range rows {
-			if strings.TrimSpace(rw.raw[groupCol+1]) == AccountEntity {
+			v := strings.TrimSpace(rw.raw[groupCol+1])
+			if lbl, ok := d.Label[v]; ok {
+				v = lbl
+			}
+			if v == AccountEntity {
 				return nil, fmt.Errorf("%s line %d: a %s is called %q, which is the name "+
 					"used for the total across all of them. Forecast by a different column "+
 					"instead, e.g. -by \"Campaign ID\"",
@@ -667,6 +689,9 @@ func readCSVFilling(path string, want []string, groupBy string, fillAbsent bool)
 		entity := AccountEntity
 		if groupCol >= 0 {
 			entity = strings.TrimSpace(rw.raw[groupCol+1])
+			if lbl, ok := d.Label[entity]; ok {
+				entity = lbl // the name it goes by now, not the ID or an older name
+			}
 			if entity == "" {
 				entity = "(unnamed)"
 			}
@@ -727,7 +752,7 @@ func readCSVFilling(path string, want []string, groupBy string, fillAbsent bool)
 			live = append(live, e)
 			continue
 		}
-		if slicesContainsFold(stoppedEntities, e) {
+		if slicesContainsFold(stoppedEntities, e) || slicesContainsFold(stoppedEntities, labelKey(d, e)) {
 			d.Stopped = append(d.Stopped, e)
 			d.Inactive = append(d.Inactive, e)
 			continue
@@ -1114,6 +1139,14 @@ func findGroupColumn(path string, names []string, numeric []bool, rows []row,
 	case len(ids) > 1:
 		return "", tooMany(ids)
 	}
+	// Nothing had exactly rowsPerDay distinct values. A renamed campaign is exactly
+	// this: the name column names each day's rows once but carries an extra value
+	// across the file. Accept a column that is unique *within* each day, which is
+	// the property that actually matters, before giving up.
+	if c := uniquePerDayColumn(append([]string{""}, names...), rows, ""); c >= 0 {
+		return names[c-1], nil
+	}
+
 	// Nothing that names anything. Say whether the problem is that no column fits
 	// at all, or that the only ones that fit are quantities -- they need different
 	// answers from the reader, and the second used to be taken silently.
@@ -1245,6 +1278,137 @@ func withConcepts(d *Data, metrics []string) string {
 		}
 	}
 	return strings.Join(out, ", ")
+}
+
+// entityLabels finds the readable name for each value of an ID group column, and
+// reports any campaign whose name changed during the period.
+//
+// The name used is the one on the **last day the ID appears**, which is what the
+// campaign is called now. Every earlier row for that ID is relabelled to it, so a
+// rename leaves one continuous series rather than two half-length ones.
+//
+// Two IDs can end up wanting the same name -- a name reused after a campaign was
+// deleted, or two campaigns genuinely named alike. Folding them together would
+// silently add two campaigns' numbers into one series, so the ID is appended to
+// both instead.
+//
+// Returns the label column's name, the map, and the renames found. All three are
+// empty when no column can serve as a name.
+func entityLabels(header, names []string, numeric []bool, rows []row,
+	group string, rowsPerDay int) (string, map[string]string, []string) {
+
+	groupCol := -1
+	for c, n := range names {
+		if n == group {
+			groupCol = c
+		}
+	}
+	if groupCol < 0 {
+		return "", nil, nil
+	}
+
+	// Choosing the name column. It need not have exactly rowsPerDay distinct values
+	// -- a rename is precisely the case where it has more. Nor need it be unique
+	// within a day: two campaigns can genuinely share a name, and requiring
+	// uniqueness there fell back to bare IDs for exactly the file that needed a
+	// name most.
+	//
+	// What it must do is name one thing: no ID may carry two different values for it
+	// on the same day. Among the columns that manage that, the one whose names tell
+	// the most campaigns apart wins, and file order breaks a tie. That is what
+	// separates "Campaign" (fifteen names) from "Currency code" (one), without
+	// either being named in the code.
+	nameCol, bestScore := -1, -1
+	for c, n := range names {
+		if c == groupCol || numeric[c] || looksLikeIdentifier(n) {
+			continue
+		}
+		perDay := map[string]string{}
+		last, latest := map[string]string{}, map[string]string{}
+		ok := true
+		for _, rw := range rows {
+			if c+1 >= len(rw.raw) {
+				ok = false
+				break
+			}
+			id := strings.TrimSpace(rw.raw[groupCol+1])
+			v := strings.TrimSpace(rw.raw[c+1])
+			if v == "" {
+				ok = false
+				break
+			}
+			k := rw.day + "\x1f" + id
+			if was, seen := perDay[k]; seen && was != v {
+				ok = false // two names for one campaign on one day: not a name column
+				break
+			}
+			perDay[k] = v
+			if rw.day >= last[id] {
+				last[id], latest[id] = rw.day, v
+			}
+		}
+		if !ok {
+			continue
+		}
+		distinct := map[string]bool{}
+		for _, v := range latest {
+			distinct[v] = true
+		}
+		if len(distinct) > bestScore {
+			nameCol, bestScore = c, len(distinct)
+		}
+	}
+	if nameCol < 0 {
+		return "", nil, nil
+	}
+	best := nameCol
+
+	lastDay, names_ := map[string]string{}, map[string]string{}
+	first := map[string]string{}
+	for _, rw := range rows {
+		id := strings.TrimSpace(rw.raw[groupCol+1])
+		nm := strings.TrimSpace(rw.raw[best+1])
+		if _, ok := first[id]; !ok {
+			first[id] = nm
+		}
+		if rw.day >= lastDay[id] {
+			lastDay[id], names_[id] = rw.day, nm
+		}
+	}
+
+	// Disambiguate names two IDs both claim.
+	count := map[string]int{}
+	for _, nm := range names_ {
+		count[nm]++
+	}
+	label := map[string]string{}
+	for id, nm := range names_ {
+		if count[nm] > 1 {
+			nm = fmt.Sprintf("%s (%s)", nm, id)
+		}
+		label[id] = nm
+	}
+
+	var renamed []string
+	for id, was := range first {
+		if now := names_[id]; now != was {
+			renamed = append(renamed, fmt.Sprintf("%q -> %q", was, label[id]))
+		}
+	}
+	sort.Strings(renamed)
+	return names[best], label, renamed
+}
+
+// labelKey is the group value an entity is stored under -- the inverse of d.Label,
+// used where a list was built from raw column values but is checked against the
+// entity names those values became.
+func labelKey(d *Data, entity string) string {
+	for id, lbl := range d.Label {
+		if lbl == entity {
+			return id
+		}
+	}
+	return entity
 }
 
 // looksLikeRatio spots columns that are a rate rather than a count. They are
@@ -1412,7 +1576,14 @@ func runningEntities(d *Data) map[string]bool {
 	running := map[string]bool{}
 	for _, r := range d.Raw {
 		if r.Day == last && campaignStates[strings.ToLower(r.Data[col])] {
-			running[r.Data[d.GroupBy]] = true
+			// Keyed by the name the entity is stored under, which is the label when
+			// the group column is an ID. Keying by the raw ID here would match
+			// nothing against d.Entities and mark every campaign switched off.
+			e := r.Data[d.GroupBy]
+			if lbl, ok := d.Label[e]; ok {
+				e = lbl
+			}
+			running[e] = true
 		}
 	}
 	return running
