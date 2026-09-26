@@ -249,6 +249,35 @@ Several things moved, so older notes may mislead:
   `Campaign ID` out of the sums (fifteen IDs added gave 327,129,489,016) *and* is
   what lets an ID column qualify as the campaign column at all.
 
+- **An account rate is blended, not meaned** (`AGENTS.md` §2a). Each campaign's
+  value weighted by its own denominator column, which is exactly total-clicks-
+  over-total-impressions. The weight must be the **canonical** column for that
+  concept (`canon` in `wantedMetrics`) or name the very thing the rate is per
+  (`denominatorPhrase`); anything else falls back to an unweighted mean over the
+  campaigns that reported, and `blendLines` says which happened. Taking the first
+  column of the right concept made the answer depend on the download order;
+  weighting `Cost per add to cart` by `Website purchases` was 31.9% out.
+- **A blank rate cell is not a rate of zero**, and neither is a `-fill-absent`
+  row — both get weight 0. Counting them dragged the account figure down by the
+  size of whatever campaign had nothing to report.
+- **`reach` is off the allow-list on purpose** and must not be added back: it
+  counts deduplicated people, so it does not add across campaigns and the true
+  account figure is not in the export. `frequency` is a rate.
+- **A slash makes a ratio**, tested after the parenthesised qualifier is stripped —
+  `Cost / conv.` is CPA, `Purchases (web/app)` is still a count.
+- **Both waits on a worker are bounded** (`startupTimeout`, `forecastTimeout`) and
+  workers run in their own process group, because `cmd.Wait` cannot return while
+  any descendant holds the inherited stderr pipe.
+- **Weights are checked against `models/fetch.py`'s `EXPECTED`**, not the hash
+  written beside the file, and the adapter path may not leave `models/`.
+- **`floorAtZero` raises a negative forecast to zero** for spend, impressions,
+  clicks, conversions and cost-per — never revenue — and both commands say how
+  many. Several quantiles reading exactly 0 is the clamp, not the model.
+- **`import` proves `data/reports/` is writable before it wipes anything.** It
+  used to wipe first, so a read-only folder destroyed the previous account's runs.
+  The wipe-to-report window is still the one gap: Ctrl-C there leaves runs stored
+  and no report, and `report` finishes the job (see the `finish-an-import` skill).
+
 Columns are sorted into forecast / setting / rate / identifier / text by rule
 (`AGENTS.md` §4b). `forecast` prints which rule it applied to each; **`import`
 prints only the `forecasting:` line** and nothing about the columns it set

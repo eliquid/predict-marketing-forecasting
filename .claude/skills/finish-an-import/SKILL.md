@@ -54,21 +54,43 @@ window half finished.
 | What you see | Where it stopped | What to do |
 |---|---|---|
 | CSV still in `data/`, database unchanged from the last completed import | anywhere in the forecasting — every window, or the average | start over (see below); nothing was stored and nothing was lost |
+| CSV still in `data/`, this export's runs present, **no report at all** | between `storeRun` and `writeComparison` — the wipe has already happened | do **not** re-import. `./predictmarketing report`, then move the CSV by hand and finish the fine-tune below |
 | CSV still in `data/`, this export's runs present, report 1 written | between writing report 1 and `fileAway` | move the CSV to `data/imported/` by hand, then finish the fine-tune below |
 | CSV in `imported/`, only `_models.html` | at or after the fine-tune | finish the fine-tune, below |
 | CSV in `imported/`, both reports | it finished | nothing |
 
 A run row exists only once a model has finished every entity, so a model that is
 half done leaves nothing. And `series`, `raw` and every run are written in one
-pass **after** the forecasting, so an interruption during a model leaves the
-database exactly as the previous import left it — history in it is evidence of
-the *last completed* import, never of this one.
+pass **after** the forecasting, so an interruption *during a model* leaves the
+database exactly as the previous import left it.
+
+**That protection ends the moment the last model answers.** `importOne` then runs
+`clearDatabase`, `saveData`, `saveRaw` and every `storeRun`, and only after all of
+them writes report 1. Anything that stops it in that gap leaves the new runs
+stored, the previous account's runs deleted and no report on disk.
+`checkWritable` closes the everyday cause — a reports folder gone read-only — by
+probing the folder before a single model is started. It cannot close the gap
+itself: a Ctrl-C lands there, and so does any other write failure. Reproduced by
+putting a directory where report 1's file goes:
+
+```
+  cleared 5 earlier run(s) from pm2.db -- an import starts a fresh account
+error: 05-campaigns.csv: open .../reports/05-campaigns_models.html: is a directory
+```
+
+Five runs stored, CSV still in `data/`, no report. `./predictmarketing report`
+rebuilds the page from those runs without forecasting again. Ctrl-C now says the
+same thing: it tells you to check `runs` before re-running anything, because the
+models having finished printing is exactly when a person reaches for it.
 
 ## If the CSV is still in `data/`
 
-There is nothing to salvage and nothing to undo: an interrupted import stored
-nothing, and re-running wipes whatever the last completed import left. Put the
-CSV back in `data/` if it is not there, and run it again.
+**Check `runs` first.** If this export's runs are already there, the interruption
+landed after the store and re-importing throws away work that is finished — run
+`./predictmarketing report` instead. Only when the database still holds the *last
+completed* import is there nothing to salvage and nothing to undo. Then re-running
+is right, and it wipes whatever that import left. Put the CSV back in `data/` if
+it is not there, and run it again.
 
 ```bash
 ./predictmarketing import
@@ -78,10 +100,11 @@ What this costs is stated above: every forecast for every series, not just the
 half-written ones. If the database holds anything you still want scored, copy it
 somewhere first and re-run against a scratch file with `-db`.
 
-There is no partially-stored state to find. Runs are written in one pass after
-every model has answered, so either this export's runs are all there or none of
-them are. A database holding some windows but no `average@90d` cannot be produced
-by an interrupted import; if you see one, it came from `forecast`.
+Runs are written in one pass after every model has answered, and `average@90d`
+goes in last, so a database holding some windows and no `average@90d` means the
+store loop itself was interrupted — `storeRun` is called once per run in a plain
+loop, not inside one transaction. A full set with no report is the row added to
+the table above. Neither can be produced by an interruption during a model.
 
 There is no "extra `runs` row" to clean up after a re-run any more — the wipe
 handles it. The delete below is only for a duplicate you made yourself with
@@ -107,11 +130,15 @@ Finish it in three steps instead.
 
 1. **Train, passing what `import` would have passed.** The command `import`
    prints on a failed fine-tune is incomplete — it omits `--steps`, and
-   `finetune.py`'s own defaults are 1000 steps, `Cost,Impr.,Clicks` and
-   `Campaign` — all three wrong here. `import` passes 2000 and the file's real
-   columns, but running the trainer by hand does not, so supply them. The
-   command `import` prints when a fine-tune fails already carries them; otherwise
-   read them out of the import's output or out of the database:
+   The command `import` prints on a failed fine-tune already carries
+   `--metrics`, `--group` **and `--label`** — copy it, and add the one thing it
+   omits, `--steps 2000` (`finetune.py`'s own default is 1000). Its other
+   defaults, `Cost,Impr.,Clicks` and `Campaign`, are Google-Ads-shaped and apply
+   only when you type the command yourself.
+
+   If that line is gone, two of the three are recoverable from the database and
+   `--label` is not: `runs` has no column for it. It matters only when `group_by`
+   is an ID column, and only so the skipped list names campaigns not numbers:
 
    ```bash
    sqlite3 pm.db "SELECT metrics, group_by FROM runs
@@ -120,7 +147,7 @@ Finish it in three steps instead.
    models/.venv/bin/python models/finetune.py "data/imported/<file>.csv" \
        --steps 2000 --metrics "Cost,Impr.,Clicks" --group "Campaign"
    # ...substituting the names that query returned, which on a non-Google
-   # export are nothing like these.
+   # export are nothing like these. Add --label "Campaign" when --group is an ID.
    ```
 
    Check its first two printed lines say the series and metric counts you expect.

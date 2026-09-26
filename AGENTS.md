@@ -599,11 +599,15 @@ be assumed to** — there is no way to distinguish a partial day from a genuine
 one without knowing when the file was produced, which the file does not say.
 
 **The Excel option is not a CSV.** Measured on a real export: it is UTF-16
-little-endian (BOM `ff fe`) and **tab**-separated, despite the `.csv` name. It
-hits two guards in turn — first `whyOneColumn` ("probably tab-separated"), and
-if only the separator is fixed, then the UTF-8 header check. Neither message
-names UTF-16 specifically; if that proves confusing in practice, that is the
-message to improve, not the guards.
+little-endian (BOM `ff fe`) and **tab**-separated, despite the `.csv` name.
+`sniffNotACSV` looks at the first 8 KB before anything tries to read the file as
+text and names what it actually is — a zip/`.xlsx` (`PK\x03\x04`), a PDF
+(`%PDF`), UTF-16 (either BOM), or a tab- or semicolon-separated file.
+
+The separator is judged across the **first 25 lines, not line 1**, because a
+platform export opens with a title and a date range that contain no tabs — which
+is exactly the file this check exists for, and the one the old line-1 test missed.
+`whyOneColumn` is still there behind it, for a file that gets past the sniff.
 
 Converting one rather than re-downloading works, and was done on the real export:
 
@@ -615,26 +619,28 @@ On a 16,485-row export this produced a file that imported cleanly: 1,099 days,
 15 campaigns, names containing commas intact, because those arrive quoted and
 the quoting survives. A campaign name containing a **tab** would break it.
 
-**The numbers have to be written the English way.** `parseCell` strips `$ £ €`,
-spaces and commas and hands what is left to `ParseFloat`, so a file written in
-another locale is read without complaint and read wrongly. Measured on 40-row
-files built for this:
+**A continental-European number is read correctly now.** `normaliseCell` (shared
+by `parseCell` and `cellIsNoData`, so the two can never disagree) settles the
+decimal point by **the last separator in the cell**, strips every unicode space
+class, and strips `$ £ € ¥ ₹`. Measured with `parseCell`:
 
-| Written | Stored | |
-|---|---|---|
-| `1.200,50` (de/es/it/nl) | `1.2005` | no error, 1,000x too small |
-| `1 200,50` (fr) | `120050` | no error, 100x too large |
-| `¥100` | — | the column becomes text and is never forecast (§4b) |
+| Written | Read as |
+|---|---|
+| `1.200,50` (de/es/it/nl) | `1200.5` |
+| `1 200,50` (fr, ordinary or NBSP) | `1200.5` |
+| `$1,234.00` | `1234` |
+| `(1,234.00)` | `-1234` (parenthesised negative) |
+| `¥100`, `₹100` | `100` |
 
-The first two are the worst thing that can happen to a file here: the column is
-numeric, every row parses, nothing is printed, and the forecast is confidently
-wrong. Nothing downstream can tell afterwards. The third is the opposite — quiet
-on screen, loud in the database, where the column is simply missing from
-`series`. Only `$`, `£` and `€` are stripped; any other currency symbol takes its
-column out.
+A lone `,` with exactly three digits after it is still a thousands separator
+(`1,234` -> `1234`); any other count makes it the decimal point (`1,23` -> `1.23`).
 
-Re-download with the account set to a locale that writes `1200.50`, or convert
-the separators before importing.
+Two things are still refused rather than guessed: a hex float and an underscored
+literal, because `ParseFloat` accepts `0x1p3` and `1_000` and neither is anything
+an export writes — `parseCell` rejects any cell containing `x`, `X` or `_`.
+Column *names* are accent-folded separately (`foldAccents` in `normaliseColumn`),
+so a non-English header is matched on its letters instead of being shredded into
+`co t`.
 
 ## 2a. How a campaign export is read
 
@@ -649,10 +655,39 @@ over 262 days arrives as 3,930 rows. That shape drives most of the design.
 | Uneven rows per day | **Refused.** A day missing a campaign would put a step in the totals that never happened. `-fill-absent` is the one way past it, for exports that list a campaign only on the days it ran — see §2a2. |
 | Text columns | Stored, never forecast. |
 | `Campaign ID` and similar | Numeric, but a label. Stored, never forecast — adding fifteen together gives 327,129,489,016. |
-| Rates (CTR, conversion rate) | **Forecast like anything else.** Percentages parse as numbers ("4.20%" -> 4.20, kept as written) and the sign goes back on in the report. What a rate is *not* is addable, so the account figure is the **mean** across campaigns, not the sum. |
+| Rates (CTR, CPC, CPA, ROAS, any `cost per`) | **Forecast like anything else.** Percentages parse as numbers ("4.20%" -> 4.20, kept as written) and the sign goes back on in the report. What a rate is *not* is addable — and it is not a plain mean either. The account figure is the **blended** rate: each campaign's value weighted by its own denominator column, `sum(rate_i * w_i) / sum(w_i)`, which is exactly total-clicks-over-total-impressions. `rateDenominator` says which concept the denominator is (CTR/CPM/CPV -> impressions, CPC/CVR -> clicks, CPA/CPL -> conversions, ROAS -> spend, `X per Y` -> Y's concept, `A / B` -> B's concept); the column chosen is recorded in `d.WeightedBy` and **printed**. When the file carries no such column the fallback is an unweighted mean over the campaigns **that actually reported** — a blank, a `-`, or a row `-fill-absent` invented gets weight 0, not a rate of zero. |
 | Settings (budget, bid, target CPA, caps) | **Stored and aggregated, never forecast.** A budget is a dial you turn; forecasting it just replays the number you set — the real file produced seven days of 5877.00. Cost per acquisition is *not* a setting: it is cost divided by conversions, an outcome you measure. |
 | Paused campaigns | **Stored in full, never forecast, never trained on.** See §2a1. Named both in the terminal and in the report — a campaign that simply vanishes from the page reads as an omission. Asking for one by `-entities` says why rather than "no campaign named". |
 | Every original row | Kept verbatim in the `raw` table. |
+| Mixed currencies | **Refused.** `oneCurrency` runs *before* the group column is chosen, deliberately, so the file is refused for the reason that matters rather than as "several columns could separate them". A single currency is kept in `d.Currency` and printed. Every figure here is arithmetic across rows -- the account total, the blended rates -- and 100 USD plus 300 EUR is 400 of nothing. |
+| An absurdly shaped file | **Refused.** `maxColumns` 512 and `maxCellBytes` 1 MiB. Growth on the ingest path is multiplicative -- entities x metrics x charts, all inlined into one HTML file -- so a 850 KB file of 5,000 columns reached 3.9 GB resident and produced a 12 MB page. The Google export here has 13 columns, the Meta one 12. |
+
+**The two answers for a rate differ by multiples, so the output has to say which
+happened** (`blendLines`, printed by both `forecast` and `import`):
+
+```
+account figure is the blended rate, weighted by the column named: CTR (by Impr.)
+account figure is a plain mean of the campaigns that reported -- this file has
+no column to weight by, so it is NOT the blended rate: Cost per purchase
+```
+
+Measured on one file downloaded twice, once with an impressions column and once
+without: account CTR 0.5645 against 4.4633, from the same campaign CTRs, both
+previously announced as "blended". Against the true blended figure, the plain mean
+gave CTR 4.7167 vs 4.8869, Avg. CPC 1.6267 vs 2.1975 (26% low) and ROAS 2.9167 vs
+3.5292 on a three-campaign day.
+
+**The denominator is the most canonical column of that concept, not the first one
+in the file.** Taking the first made the number depend on the order the columns
+were downloaded in: on a Meta header where `Reach` and `Landing page views`
+precede `Impressions`, account CTR came out 1.95% against a true 1.00%, and
+swapping two columns in the same file changed it to 1.000. Ranking is by
+`patternRank` (position in the concept's pattern list, written most-canonical
+first) then by the shorter name. A column that is neither canonical
+(`patternRank < canonCount`) nor the very thing the rate names
+(`denominatorPhrase`) is **refused as a weight** -- a plausible wrong weight is
+worse than none: `Cost per add to cart` was being weighted by `Website purchases`,
+the right concept and the wrong column, for a gap of up to 31.9%.
 
 The account and the campaigns are forecast **independently**, so their totals
 will not match exactly. On the real file they agree to within 1–4%, which is a
@@ -682,23 +717,21 @@ is a label. If the only column that fits is a quantity, the file is refused and 
 message names it; `-by` on a metric is refused for the same reason rather than
 obeyed.
 
-**A campaign renamed or replaced part-way through the export cannot be imported
-at all.** `findGroupColumn` counts a column's distinct values over the *whole
-file* and requires that count to equal the rows per day, so a file with two rows
-every day but three campaign names in it is refused:
+**A campaign renamed part-way through, with no ID column, is refused by the
+*second* guard now, not the first.** `findGroupColumn` still prefers a column
+whose distinct count over the whole file equals the rows per day, but when nothing
+has that count it falls back to `uniquePerDayColumn` -- a column that names each
+day's rows exactly once, which is the property that actually matters and which a
+rename does not break. The name column is therefore accepted, and
+`sameCampaignsEveryDay` is what refuses the file, naming the campaign that
+changed. Naming the column explicitly still hits the old rule.
 
-    there are 2 rows per day but no column has exactly 2 distinct values, so they
-    cannot be told apart. Name the column with -by NAME
+**One flag does import such a file: `-fill-absent`** (§2a2). It reads the two
+names as two campaigns, one of which started and one of which stopped, zero-fills
+each outside its own run, and marks the old name `d.Stopped` -- stored, named,
+never forecast. That is the honest reading when there is no ID; with an ID column
+the history stays one series instead (§2a3).
 
-Naming it does not help. `-by "Campaign"` on the same file answers
-
-    -by "Campaign" has 3 distinct values but there are 2 rows per day, so it does
-    not separate them
-
-Both were measured. No flag imports such a file; the fix is in the export — split
-it at the rename, or re-export a range over which the campaign set is constant.
-The message's advice is honest for the commoner cause (a column the tool could
-not pick between) and a dead end for this one.
 
 ## 2a3. Renamed campaigns
 
@@ -1282,7 +1315,7 @@ In order. The first rule that matches wins, and whichever applied is printed.
 | Not numeric | — | stored in `raw`, never forecast |
 | Identifier | last **word** is `id`, `ids` or `code` | stored, never forecast |
 | Setting | contains `budget`, `bid`, `target`, `limit`, `cap` | stored and aggregated, never forecast |
-| **A wanted metric** | matches `wantedMetrics` | forecast; **summed** across campaigns, or **averaged** if the concept is a rate or a per-unit cost |
+| **A wanted metric** | matches `wantedMetrics` | forecast; **summed** across campaigns, or **blended** if the concept is a rate or a per-unit cost (weighted by its denominator where the file has one -- see §2a) |
 | Anything else numeric | — | stored and named as `numeric, but not a metric this forecasts`, never forecast |
 
 **The last two rows are an allow-list, and that direction is the point.** It used
@@ -1299,12 +1332,43 @@ contain "budget". Failing closed is the only way that ends.
 | Concept | Matched on | Adds up? |
 |---|---|---|
 | `cost per` | `cpa`, `cpc`, `cpm`, `cpv`, `cpl`, `cost per`, `spend per`, `revenue per`, `value per` | **no** |
-| `rate` | `ctr`, `cvr`, `roas`, `rate`, `ratio`, `share`, `percent`, `avg`, `average`, `mean` | **no** |
-| `revenue` | `revenue`, `conversion value`, `purchase value`, `sales`, `turnover` | yes |
+| `rate` | `ctr`, `cvr`, `roas`, `rate`, `ratio`, `share`, `percent`, `frequency`, `avg`, `average`, `mean` -- canon 0 | **no** |
+| `revenue` | `revenue`, `conversion value`, `conv value`, `purchase value`, `sales`, `turnover` -- canon 7 | yes |
 | `conversions` | `conversions`, `conv`, `purchases`, `results`, `leads`, `signups`, `installs`, `add to cart`, `orders`, `actions` | yes |
-| `clicks` | `clicks`, `taps`, `visits`, `sessions` | yes |
-| `impressions` | `impressions`, `impr`, `imps`, `imp`, `views`, `reach`, `plays` | yes |
-| `spend` | `cost`, `spend`, `spent`, `amount` | yes |
+| `clicks` | `clicks`, `click`, `landing page views`, `taps`, `visits`, `sessions` -- canon 2 | yes |
+| `impressions` | `impressions`, `impression`, `impr`, `imps`, `imp`, `views`, `view`, `plays` -- canon 5 | yes |
+| `spend` | `cost`, `spend`, `spent`, `amount` -- canon 4 | yes |
+
+**`reach` is deliberately absent, and must not be added back.** It counts
+deduplicated people, so it does not add across campaigns -- audiences overlap --
+and the account's true reach is not derivable from the export at all. It was being
+summed and labelled an impression: three campaigns reaching 600, 700 and 800 gave
+an account reach of 2,100 when the truth might be 900. Rather than pick a wrong
+aggregation it is left off the allow-list, so it is stored and named on screen and
+never forecast. `Frequency`, which is impressions over reach, is a `rate`.
+
+**`canon` is how many leading patterns name the concept plainly**, as opposed to a
+particular kind of it. Only a column matching one of those can serve as a blended
+rate's denominator (§2a), which is what keeps `Cost per add to cart` from being
+weighted by a purchases column that merely shares the concept.
+
+**`conv value` is in `revenue`** because Google Ads writes its revenue column
+`Conv. value`, which was matching `conv` from `conversions` -- revenue counted as
+a conversion count. Both are additive so no total was wrong, but the label was.
+**`landing page views` sits in `clicks`**, above the impressions group that would
+otherwise claim `views`: it is a post-click event, and leaving it among
+impressions also let it hijack CTR's denominator.
+
+**A slash makes a ratio whatever it is called.** Before the table is consulted,
+`metricConcept` strips any parenthesised qualifier, splits on `/`, and returns the
+pseudo-concept `ratio` (not addable) if either side matches any pattern. Google
+Ads spells its two most important metrics that way: `Cost / conv.` is CPA and
+`Conv. value / cost` is ROAS. Normalisation drops the slash, so `Cost / conv.`
+became ` cost conv `, matched `conv` before `cost per` could fire, and was
+**summed** -- measured on a three-campaign day, CPA stored as 74.96 against a true
+31.78 and ROAS as 8.75 against a true 3.53, while the same file's `ROAS` column
+stored 2.92. Two spellings of one metric, two wrong answers, on the page together.
+The qualifier is stripped first so `Purchases (web/app)` stays a count.
 
 `cost per` before `spend`, or every cost-per-something reads as money spent.
 `rate` before `clicks` and `conversions`, or "click-through rate" and "conversion
@@ -1610,7 +1674,33 @@ wrong answer that looked right.
   unrelated shapes and a perturbation test. Keep those tests.
 - **Validate every forecast before storing it**: right shape, no NaN or infinity,
   quantiles ascending. A failing forecast fails the run; nothing is written.
-  Negative values are legitimate and are *not* rejected.
+  A negative value is never *rejected*, but for the concepts that are physically
+  non-negative it is **raised to zero** (`floorAtZero`, `worker.go`): `spend`,
+  `impressions`, `clicks`, `conversions` and `cost per`. `revenue` is deliberately
+  excluded -- a refund is a real negative -- and so are `rate` and `ratio`, and any
+  column the allow-list did not recognise. `max(0,x)` is monotonic, so the clamp
+  preserves the ordering `checkForecast` has just verified. A campaign running
+  Monday to Friday made `chronos2` return a Saturday median of -2.891 and a q10 of
+  -23.720: the weekly shape read correctly and then extrapolated through the floor.
+  Both `forecast` and `import` say how many values were raised, because where
+  several quantiles read exactly 0 that is the clamp, not the model being unsure,
+  and the band is narrower than it looks.
+- **Bound every wait on a worker.** `forecastTimeout` (5 minutes) covers the reply
+  and `startupTimeout` (3 minutes) covers the handshake, which had no deadline at
+  all -- a worker stuck loading hung the whole command forever with nothing
+  printed, and an `import` starts six of them. Workers run in their own process
+  group (`SysProcAttr{Setpgid: true}`) and are killed with `killGroup`, because
+  `cmd.Wait` cannot return while any descendant still holds the inherited stderr
+  pipe and `Process.Kill` only kills the direct child: a torch helper wedged a run
+  that had already written its report. `reap` bounds the second wait too and says
+  it is leaving rather than hanging.
+- **Check the weights against the pin that shipped with the source**, not the hash
+  written beside the file. `models/weights.json` is mode 644 and holds both the
+  path and the hash, so anything able to write that one file could point a model
+  at a substitute and record its hash in the same breath, and the run would store
+  that hash as provenance. `weights_check.load_verified` compares against
+  `models/fetch.py`'s `EXPECTED`. The adapter is held to the same standard differently:
+  `_under_models` refuses a `models/finetuned.json` path that leaves `models/`.
 - **Quantile crossing is repaired, not rejected.** Both models predict each
   quantile independently, so mild crossing (~0.2%) is expected. It is fixed by
   sorting — monotonic rearrangement, a standard and strictly improving correction —

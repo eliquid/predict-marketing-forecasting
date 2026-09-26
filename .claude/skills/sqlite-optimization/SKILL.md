@@ -180,6 +180,16 @@ changed, and what to leave alone:
   writes once per forecast and is not latency-bound, so there is nothing to buy
   by weakening durability. Section 1 asks for the choice to be recorded: this is
   the record.
+- **Opening an unchanged database writes nothing — but WAL still needs its
+  sidecar.** `checkSchema` skips the DDL on a file already stamped at
+  `schemaVersion`, and `refreshDerived` compares the view and both indexes with a
+  pure read, so a *read-only file* in a writable directory is fine. Read-only
+  *media* is not, and a comment in `db.go` used to claim otherwise: every database
+  this tool writes is in WAL mode, and WAL must create a `-shm` file next to it,
+  so a mounted snapshot or locked backup volume cannot be opened at all. `openDB`
+  names that case specifically now instead of passing SQLite's `attempt to write a
+  readonly database` through. `PRAGMA journal_mode=DELETE`, run while the file is
+  still somewhere writable, is the fix for a copy you hand out (`db-repair` §1).
 - **`PRAGMA user_version` gates every open** (`checkSchema`). Section 3's warning
   about `CREATE TABLE IF NOT EXISTS` not being a migration was not theoretical
   here — the repo's own `pm.db` predated per-entity storage, and every command

@@ -60,12 +60,19 @@ The `user_version` stamp is ahead of this build's `schemaVersion`. Use the newer
 build. Do not lower the stamp — the file's shape is what the refusal is about,
 and forcing it past the gate is how you get `no such column` later.
 
-### "attempt to write a readonly database (1544)"
+### "is in WAL mode, and WAL needs to create a ...-shm file beside it"
 
-The database is on read-only media and it is in WAL mode. SQLite must create the
-`-shm` sidecar before it can read a WAL database at all, so the open fails on the
-first statement and the error is reported against `reading schema version`, which
-makes it look like corruption. It is not.
+```
+error: pm.db is in WAL mode, and WAL needs to create a pm.db-shm file beside it,
+which this directory does not allow. Copy the database somewhere writable and
+open it there
+```
+
+`openDB` recognises this case now and says it outright. Older builds let SQLite's
+own `attempt to write a readonly database (1544)` through, reported against
+`reading schema version of pm.db`, which read like corruption. It is not: SQLite
+must create the `-shm` sidecar before it can read a WAL database at all, so the
+open fails on the first statement.
 
 A read-only *file* in a writable directory is fine and always has been. A
 read-only *directory* — a mounted snapshot, a share, a locked backup volume — is

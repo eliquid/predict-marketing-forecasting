@@ -42,6 +42,16 @@ before you do it:
   model trained on the user's data belongs on that side of the line too, which
   means `import.go`'s report-2 path, not the pretrained list.
 
+**It also does not decide what gets forecast.** The columns are chosen before any
+worker starts: `wantedMetrics` in `ingest.go` is an allow-list of concepts — spend,
+impressions, clicks, conversions, revenue, `cost per`, rate — matched on whole
+words after `normaliseColumn`, and anything numeric matching none of them is
+stored, printed as `numeric, but not a metric this forecasts:` and never sent to a
+model (`AGENTS.md` §4b). A trial file whose columns are named for your model
+rather than for those concepts will have it forecast nothing, with no error.
+`testdata/example.csv` is `date,spend,budget` and works because `spend` is on the
+list (`budget` is a setting, stored and not forecast).
+
 ## Steps
 
 1. **Add it to `models/requirements.txt`** if it needs new Python packages. Pin
@@ -77,6 +87,25 @@ before you do it:
 
    Change only: which library is imported, how the model is loaded, and the one
    call that turns a `(metrics, days)` matrix into `(metrics, horizon, quantiles)`.
+
+   **Say hello inside `startupTimeout` (3 minutes) and answer inside
+   `forecastTimeout` (5 minutes)**, both in `worker.go`. Past the first the
+   process is killed and `startWorker` reports the model as stuck starting up,
+   naming the last line of its stderr; past the second `readLine` kills it,
+   because a late reply would be read as the answer to the *next* request and
+   attach one series' forecast to another. Slow work belongs before the handshake.
+
+   **Do not sort or clamp in Python.** Every reply goes through `checkForecast`,
+   which sorts a day's quantiles back into order and reports how far out they
+   were, and then `floorAtZero`, which raises negatives to zero — but only for
+   `spend`, `impressions`, `clicks`, `conversions` and `cost per`. `revenue` and
+   `rate` are deliberately left alone, both being legitimately negative.
+   Repairing it yourself hides the crossing the Go side would have announced.
+
+   **Do not leave helpers running.** The worker is started in its own process
+   group (`Setpgid` in `startWorker`) so `killGroup` can reach what torch and
+   OpenMP fork. A helper that outlives the worker keeps the inherited stderr pipe
+   open and wedges `cmd.Wait` after the report is already on disk.
 
    **The handshake's quantiles must include 0.1 and 0.9 as decimal literals, in
    ascending order.** `forecast_accuracy` joins `low` and `high` on exactly those

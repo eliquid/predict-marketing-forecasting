@@ -569,10 +569,20 @@ func sayIfInterrupted() {
 	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
 	go func() {
 		<-c
+		// Careful with this wording. The database is untouched while a model is
+		// running, but importOne wipes and stores between the last model's answer
+		// and the report -- which is exactly when someone reaches for Ctrl-C,
+		// because the models have just finished printing. Saying "nothing is
+		// half-written" flatly would be false in that window.
 		fmt.Fprintf(os.Stderr, "\n\nstopped.\n"+
-			"  Nothing is half-written: the database is only changed once every model\n"+
-			"  has answered. If the CSV is still in data/, run the same command again.\n"+
-			"  `./predictmarketing runs` shows what is stored.\n")
+			"  While a model is running the database is untouched, so if that is where\n"+
+			"  this stopped, nothing was lost -- put the CSV back in data/ and run it\n"+
+			"  again.\n"+
+			"  If the models had already finished, the import may have stored this\n"+
+			"  export and not yet written its report. Check with:\n"+
+			"    ./predictmarketing runs\n"+
+			"  If this export is listed, do NOT re-import -- run `./predictmarketing\n"+
+			"  report` to finish the job from what is already stored.\n")
 		os.Exit(130)
 	}()
 }

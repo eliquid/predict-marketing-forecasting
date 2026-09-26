@@ -23,6 +23,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -434,6 +435,7 @@ func forecastModel(model, label, series string, data *Data, days []string,
 	defer w.Close()
 
 	forecasts := map[string][][][]float64{}
+	crossing, clamped := 0.0, 0
 	for _, entity := range data.Entities {
 		rows := make([][]float64, len(data.Names))
 		for i, n := range data.Names {
@@ -447,6 +449,21 @@ func forecastModel(model, label, series string, data *Data, days []string,
 			return forecastRun{}, fmt.Errorf("%s, %s: %w", label, entity, err)
 		}
 		forecasts[entity] = q
+		crossing = math.Max(crossing, w.LastCrossing)
+		clamped += w.LastClamped
+	}
+
+	// Both repairs are announced by `forecast` and were announced by nothing here,
+	// so on the recurring job -- the one that actually runs -- a quantile sorted
+	// back into order and a negative raised to zero both happened in silence.
+	if crossing > 0 {
+		fmt.Printf("      quantiles came back slightly out of order (largest %.3f%%); "+
+			"sorted back\n", crossing*100)
+	}
+	if clamped > 0 {
+		fmt.Printf("      %d value(s) came back below zero and were raised to zero; "+
+			"where several quantiles read exactly 0 the model is extrapolating off "+
+			"the bottom of the scale, not being unsure\n", clamped)
 	}
 
 	run := Run{

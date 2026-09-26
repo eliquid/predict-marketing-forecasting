@@ -70,11 +70,14 @@ Reports go to `data/reports/`.
   average@90d: the mean of chronos2@90d and timesfm3@90d
 ```
 
-**Read the `forecasting:` line every time.** It is the only place `import` names
-the columns it is modelling — unlike `forecast`, it prints nothing about the
-columns it set aside as text, identifiers or settings (`AGENTS.md` §4b). A column
-demoted to text because a few cells stopped parsing just quietly leaves that
-list.
+**Read the `forecasting:` line every time.** It names the columns `import` is
+modelling *and the concept each one matched* — `Cost (spend), Impr.
+(impressions), Clicks` — so the allow-list shows its working, not just its
+verdict (`AGENTS.md` §4b). A numeric column that matched nothing is named on the
+next line, `numeric, but not a metric this forecasts:`, stored and never
+forecast. A column demoted to **text** because a few cells stopped parsing is
+named nowhere: `import` still prints nothing about text columns, identifiers or
+settings. It just quietly leaves the `forecasting:` list.
 
 A window longer than the file is **skipped and announced**, not an error, so a
 short export still produces everything it can. On a file of exactly 90 days the
@@ -152,10 +155,23 @@ score it.
    for 5: (account), Brand Search, Shopping - All, ...
    switched off in the export, stored but not forecast: Video Awareness, ...
    stopped running before the export's last day, stored but not forecast: ...
+   no activity at all, stored but not forecast: ...
+   note: the (account) series includes those campaigns' history, so its forecast assumes they keep spending. Per-campaign figures do not.
+   renamed during this period, kept as one series: ...
+   numeric, but not a metric this forecasts: Quality score
    not forecast, look like identifiers: Campaign ID
    stored, not forecast (you set these, you do not predict them): Budget
+   currency: USD (every money figure below is in it)
+   account figure is the blended rate, weighted by the column named: CTR (by Impr.)
    stored but not numbers: Campaign status, Campaign, ...
    ```
+
+   Each line appears only when the file gives it a reason to. Two are easy to
+   miss. The **blend line** says whether an account rate was weighted by a real
+   denominator column or is a plain mean of the campaigns that reported — the two
+   answers differ by multiples and used to print identically. **`currency:`**
+   appears only when the export carries a currency column; a file mixing two is
+   refused outright.
 
    If a column you expected to be forecast is in one of the "not forecast"
    lines, that is the classification rule (`AGENTS.md` §4b) — check the name

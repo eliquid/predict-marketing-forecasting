@@ -16,12 +16,13 @@ no append only data. It reruns the full date you give it on each import.
 
 For 3 years of data, this can be up to 17 minutes to get the full predictions.
 
-Currently tested and working for data from Google Ads, on spend and impressions
-and clicks.
+Tested against real Google Ads and Meta exports. It forecasts spend, impressions,
+clicks, conversions, revenue, cost-per-anything and rates — see **Which columns
+get forecast** for the names it recognises.
 
 A paid version of this script is being worked on that will allow you to auto import
-from Google, Meta, and MSN Ads, append data for you, and predict on more metrics 
-like Conversions, Revenue, CPA, CTR, and more with anomaly detection and warnings via Telegram.
+from Google, Meta, and MSN Ads, append data for you, and add anomaly detection
+with warnings via Telegram.
 
 ---
 
@@ -314,7 +315,9 @@ That one command:
 
 05-campaigns.csv: 150 days, enough to forecast; 365 days would be better
   5 rows per day, split by "Campaign"
-  forecasting: Cost, Impr., Clicks
+  forecasting: Cost (spend), Impr. (impressions), Clicks
+  currency: USD
+  note: the (account) series includes those campaigns' history, so its forecast assumes they keep spending. Per-campaign figures do not.
   for 5: (account), Brand Search, Shopping - All, Performance Max, Display Remarketing
   switched off in the export, stored but not forecast: Video Awareness
 
@@ -423,6 +426,10 @@ the export again if you want the sign.
 
 ## Commands
 
+Run these from inside the project folder, with `./` in front —
+`./predictmarketing setup`. Nothing is put on your `PATH`, so a bare
+`predictmarketing setup` gives "command not found".
+
 | | |
 |---|---|
 | `predictmarketing setup` | download both models' weights and record their checksums |
@@ -445,6 +452,9 @@ the export again if you want the sign.
                 total). Semicolons, because campaign names contain commas.
 -by NAME        the column that separates campaigns, if it cannot be worked out.
                 A name, not a measurement: a column that is forecast is refused
+-fill-absent    for exports that list a campaign only on the days it ran: add
+                zero rows outside each campaign's own run. A day missing from
+                the middle of a run is still refused
 -future K=V,V   known-future values, e.g. -future budget=500,500,600
 -series NAME    name for this series (default: the file name)
 -out FILE       where to write the HTML (default: next to the CSV)
@@ -495,11 +505,13 @@ A Google Ads export has one row per campaign per day. Point it straight at the f
 ```
 chronos2: 150 days of "05-campaigns" -> 7 days ahead
   5 rows per day, split by "Campaign" (750 rows kept in the raw table)
-  forecasting: Cost, Impr., Clicks
+  forecasting: Cost (spend), Impr. (impressions), Clicks
   for 5: (account), Brand Search, Shopping - All, Performance Max, Display Remarketing
   switched off in the export, stored but not forecast: Video Awareness
+  note: the (account) series includes those campaigns' history, so its forecast assumes they keep spending. Per-campaign figures do not.
   not forecast, look like identifiers: Campaign ID
   stored, not forecast (you set these, you do not predict them): Budget
+  currency: USD (every money figure below is in it)
   stored but not numbers: Campaign status, Campaign, Currency code
 ```
 
@@ -508,7 +520,8 @@ You get a forecast for **each campaign and for the account as a whole**.
 **Budgets, bids and targets are stored but not forecast** — they are dials you
 turn, and predicting them just replays the number you set. **Rates are forecast**:
 `4.20%` reads as a number, is predicted, and comes back with its sign on. At
-account level a rate is the mean across campaigns, never the sum. `Campaign ID`
+account level a rate is never the sum — see **How the account rate is worked out**
+below. `Campaign ID`
 is a label, not a quantity, so it is stored but never added up.
 
 ### Everything is stored. Only switched-on campaigns are forecast.
@@ -590,7 +603,16 @@ date,spend
 Dates in most common formats are understood, including a UTF-8 BOM and CRLF line
 endings (what Excel and Windows produce). Values may carry `£ $ €`, thousands
 separators, scientific notation, or parenthesised negatives — real ad-platform
-exports contain all of them. Negative values are fine; plenty of real series have them.
+exports contain all of them. Negative values in your file are fine; plenty of real
+series have them.
+
+A forecast is different. You cannot spend minus three pounds or serve minus one
+impression, so a predicted spend, impression, click, conversion or cost-per that
+comes back below zero is **raised to zero** before you see it. Revenue is left
+alone, because a refund is a real negative. When it happens, the tool says so.
+Where several quantiles read exactly `0`, the model is extrapolating off the
+bottom of the scale rather than being unsure, and the band is narrower than it
+looks.
 
 Rows out of order are **sorted**, so newest-first exports work as-is.
 
@@ -608,7 +630,13 @@ of your data while still producing a confident-looking forecast:
 | A cell holding a word where a number belongs | Skipping the row leaves a hole the model reads as a real dip, so the file is refused with the line number. A **blank**, a dash or a `NaN` is not this: no data means 0 (see below) |
 | A missing day | Both models treat the series as consecutive, so a gap shifts every forecast date |
 | Fewer than 32 rows | Below one input patch neither model can see a pattern |
-| Uneven rows per day | A day missing a campaign would put a step in the account total that never happened |
+| Uneven rows per day | A day missing a campaign would put a step in the account total that never happened. Add `-fill-absent` if your platform only lists a campaign on the days it ran |
+| A weekly or monthly export | Every row a week apart is not a file with holes in it, and filling those holes with zeros makes six days in seven a real zero. Download it again segmented by day |
+| A summary export with no date column | One row per campaign and no day on it: there is no time series in it to forecast |
+| An `.xlsx` or PDF renamed `.csv` | Renaming does not convert. Open it and use File > Save As, choosing CSV |
+| A `.csv (Excel)` download | UTF-16 and tab-separated despite the name — see **Getting the file out of Google Ads** |
+| A semicolon-separated file | Re-export it with commas |
+| An export mixing currencies | Every figure here is arithmetic across rows, and adding 100 USD to 300 EUR gives a number in neither. Export one currency at a time |
 
 Fill missing days in your data — a real `0` is fine — rather than leaving them out.
 
@@ -621,12 +649,12 @@ leaves everything else alone:
 | It forecasts | Names it recognises |
 |---|---|
 | spend | `Cost`, `Spend`, `Amount spent (USD)`, `Spent` |
-| impressions | `Impressions`, `Impr.`, `Imps`, `Views`, `Reach`, `Plays` |
-| clicks | `Clicks`, `Unique link clicks`, `Taps`, `Visits`, `Sessions` |
+| impressions | `Impressions`, `Impr.`, `Imps`, `Views`, `Plays` |
+| clicks | `Clicks`, `Unique link clicks`, `Landing page views`, `Taps`, `Visits`, `Sessions` |
 | conversions | `Conversions`, `Purchases`, `Results`, `Leads`, `Installs`, `Add to cart`, `Orders` |
 | revenue | `Revenue`, `Conversion value`, `Purchase value`, `Sales` |
 | cost per action | `CPA`, `CPC`, `CPM`, `CPV`, `Cost per purchase`, `Cost per results` |
-| rates | `CTR`, `CVR`, `ROAS`, `Conversion rate`, anything with `%` |
+| rates | `CTR`, `CVR`, `ROAS`, `Frequency`, and any name containing `rate`, `ratio`, `share`, `percent`, `avg` or `average` |
 
 Case, punctuation and units do not matter: `Impr.`, `impressions` and
 `IMPRESSIONS` are the same thing, and `Amount spent (USD)` is spend.
@@ -639,9 +667,39 @@ forecasting: Amount spent (USD) (spend), Impressions, Purchases (conversions)
 numeric, but not a metric this forecasts: Quality score, Days since launch
 ```
 
-A cost-per-anything and a rate are **averaged** across campaigns for the account
-figure, never summed — fifteen campaigns' cost per purchase does not add up to the
-account's.
+**`Reach` is the one that trips people up.** It is not in the list on purpose: it
+counts people, not events, so three campaigns reaching 600, 700 and 800 do not
+give an account reach of 2,100 — the audiences overlap, and the export does not
+say by how much. Rather than print a number that is wrong, the tool stores Reach,
+names it on screen, and does not forecast it. `Frequency`, which is impressions
+over reach, *is* forecast, as a rate.
+
+#### How the account rate is worked out
+
+A cost-per-anything and a rate are never summed for the account figure — fifteen
+campaigns' cost per purchase does not add up to the account's. What happens
+instead depends on what else is in your export, and **the tool tells you which**:
+
+```
+account figure is the blended rate, weighted by the column named: CTR (by Impr.)
+```
+
+That is the real blended rate: each campaign's CTR weighted by its own
+impressions, which is the number your platform would show you.
+
+```
+account figure is a plain mean of the campaigns that reported -- this file has
+no column to weight by, so it is NOT the blended rate: CTR
+```
+
+That is the fallback, used when the export does not carry the column the rate is
+*per*. It is an honest average of the campaigns, but it is not your account CTR,
+and the two can differ by multiples: the same account downloaded with and without
+an impressions column gave 4.4633 and 0.5645 from identical campaign CTRs.
+
+So if you want account-level rates you can trust, **tick the denominator column in
+the download too**: impressions alongside CTR, clicks alongside CPC, conversions
+alongside cost per conversion.
 
 If a metric you want is under a name the list does not know, it will appear in that
 second line. Force it in with `-columns "Your Column"`, which overrides the list
@@ -668,6 +726,20 @@ one campaign ending and another starting — both are exactly what the data show
 the tool does not guess: it goes by name, and the old name is reported as a
 campaign that stopped. If you want renames followed, include the campaign ID
 column in the export.
+
+### One currency per export
+
+If your export carries a currency column and every row says the same thing, the
+tool records it and prints it, so you know what the numbers are in:
+
+```
+currency: USD (every money figure below is in it)
+```
+
+If the rows say more than one thing — a multi-market or MCC download — the file is
+**refused**. Every figure the tool derives is arithmetic across rows: the account
+total, a blended CPA, a ROAS. Adding 100 USD to 300 EUR gives 400 of nothing.
+Export one currency at a time.
 
 ### Blank cells are zero
 

@@ -113,12 +113,14 @@ for the model.
 
 ## Cause 4 — no answer at all
 
-A model command that sits silent is not always slow. The 5-minute timeout covers
-the *reply* only; the handshake read has no deadline, so a worker that stalls
-while loading hangs forever with nothing after the library's progress bar.
+A model command that sits silent is not always slow, and it no longer sits silent
+forever. Two separate deadlines: `startupTimeout` (3 minutes) on the handshake and
+`forecastTimeout` (5 minutes) on the reply.
 
-- Output stops right after `Loading weights: …` and never returns → the worker is
-  stuck before its handshake. `Ctrl-C` and run the worker by hand:
+- Output stops right after `Loading weights: …` and comes back after ~3 minutes
+  with `did not say hello within 3m0s ... stuck starting up` → the worker never
+  finished starting. The message carries the worker's own last stderr line; read
+  that before anything else. `Ctrl-C` and run the worker by hand:
   `models/.venv/bin/python models/NAME_worker.py < /dev/null` — it should print
   one JSON line and exit.
 - The message is "did not answer within 5m0s … stuck rather than busy" → the

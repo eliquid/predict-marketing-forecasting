@@ -30,7 +30,9 @@ the adapter's numbers:
   Report 2 is where it appears, as a line of its own.
 
 `import` passes the trainer the metric and group columns **of the file it just
-read**, so it fits the same columns and the same campaigns the forecaster ran.
+read** — `--metrics`, `--group`, and `--label` when the group column is an ID —
+so it fits the same columns and the same campaigns the forecaster ran, and its
+skipped list prints campaign names rather than bare IDs.
 The trainer's own defaults (`--metrics Cost,Impr.,Clicks --group Campaign`) are
 Google-Ads-shaped and apply only when you run it **by hand** — pass the flags
 yourself then, or on any other export it either exits with
@@ -62,14 +64,17 @@ helping, measure it below; do not make the trainer say so.
 It prints which campaigns it is **not** training on before it starts:
 
 ```
-not training on 9 switched-off or never-active campaign(s): ...
+not training on 9 switched-off, stopped or never-active campaign(s): ...
 training on 7 series x 1099 days x 3 metrics
+data runs <first day> .. <last day>
 ```
 
-The adapter is fitted only to campaigns the export says are **switched on** as
-of its last day, and that list must match the one `forecast` and `import` print
-(`AGENTS.md` §2a1). Paused campaigns are still stored in full; they are left out
-of training and forecasting only.
+`load_series` skips exactly what the forecaster skips, and that is **three**
+rules, not one: switched off as of the export's last day, never moved, and
+*stopped* — a campaign whose rows end before the file's last day (`AGENTS.md`
+§2a1/§2a2). Miss the third and the trainer fits dead tails the forecaster will
+never be asked about. All three are still stored in full; they are left out of
+training and forecasting only.
 Training on a campaign the forecaster then refuses to run spends steps fitting
 series nobody will ever see. `running_groups` in `models/finetune.py` and
 `runningEntities` in `ingest.go` implement the same rule from the same column,
@@ -78,6 +83,18 @@ step. `python3 models/test_finetune.py` checks the Python half on its own, with
 no venv needed; `go test -run TestFinetuneAgreesOnWhatIsRunning` runs it too.
 
 Writes `models/finetuned/chronos2ft/` (4.9 MB) and `models/finetuned.json`.
+
+Before it forecasts anything it says whose numbers it learned from:
+
+```
+note: chronos2ft is fitted to <export>.csv, through <trained_through>. It is the
+wrong model for anyone else's numbers.
+```
+
+The worker sends `trained_on` — the **basename** of `source_csv`, never the full
+path, because the report is shareable. Before this, forecasting a second account
+with the first one's adapter looked identical to forecasting the account it was
+trained on.
 
 Then it is just another model:
 
@@ -157,6 +174,7 @@ Recipients train their own from the same `models/finetune.py`.
 | `no fine-tuned model yet` | nothing trained; run `models/finetune.py` |
 | `the adapter on disk is not the one that was trained` | the file changed since training; retrain |
 | `models/finetuned.json is unreadable` | registry corrupt; retrain |
+| `points at ... which is outside models/` | the registry's `path` was made absolute or given a `../`. Only `adapter_model.safetensors` is checksummed, so an adapter outside `models/` could bring any `adapter_config.json` with it. Retrain, or move it back under `models/finetuned/` |
 
 The adapter config holds an absolute path to the base weights. The worker rewrites
 it on load if the project has moved, so that alone never needs fixing by hand.

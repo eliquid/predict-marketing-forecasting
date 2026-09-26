@@ -63,7 +63,9 @@ Then prove the bundle builds and runs its own checks:
 go build -o predictmarketing . && go vet ./... && go test -count=1 .
 ```
 
-**Expect fifteen skips, and expect the suite to still say `ok`.** A copy has no
+**Expect eighteen `--- SKIP` lines, and expect the suite to still say `ok`.**
+Count them with `go test -count=1 -v . | grep -c -- '--- SKIP'`; a plain run
+prints no skip count at all. A copy has no
 `models/.venv`, so everything that needs a worker disappears: all eight
 protocol tests, both weights tests, the multivariate perturbation test, and the
 binary/pycache tests. A green run in a fresh bundle proves the CSV reader, the
