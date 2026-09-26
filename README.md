@@ -1045,7 +1045,7 @@ stuck rather than busy
 ## Testing
 
 ```bash
-go test ./...                                   # 172 tests and a fuzz target, 190 cases
+go test ./...                                   # 202 tests and a fuzz target
 go test -race -count=2 ./...                    # state leakage between tests
 go test -run '^$' -fuzz FuzzReadCSV -fuzztime 60s
 ```
@@ -1093,6 +1093,10 @@ forecast vs actual for (account)
   timesfm3         Impr.                 7       5.8%     +4.0%       86%
 
   21 forecast days are still waiting for their actuals.
+  Note: `import` empties the database, so an import is what brings
+  those actuals AND deletes the forecasts waiting for them -- the recurring
+  job can never produce a score. Use `forecast`, which does not wipe, to
+  build a history that can be scored.
   avg error is how far off, ignoring direction. bias is the direction:
   positive means the forecast ran high. in range is how often the
   actual landed inside the q10-q90 band, which should be about 80%.

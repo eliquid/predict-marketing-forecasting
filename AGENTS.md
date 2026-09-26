@@ -35,7 +35,7 @@ published, through the adapter in `models/`.
 ./install.sh                # one-time setup: Python env, build, model weights (~2.5 GB)
                             # sets up chronos2 and timesfm3; chronos2ft needs YOUR data
 go build -o predictmarketing .
-go test ./...               # 172 tests and a fuzz target, 190 cases
+go test ./...               # 202 tests and a fuzz target
 go vet ./... && gofmt -l .  # must be silent
 ./predictmarketing forecast testdata/example.csv -model chronos2
 ```
@@ -76,15 +76,35 @@ when given.
 
 | Step | Where it lives |
 |---|---|
+| Prove `data/reports/` can be created and written **before anything is emptied** | `checkWritable` |
 | Read every new CSV in `data/` | `pendingFiles`, creates the folder and a note if absent |
 | Refuse under **90 days**; 365 better, 730 best | `enoughHistory` / `historyVerdict` |
 | Empty the database — but only for the first file of the run, and only once the CSV has parsed | `storedRuns`, then `clearDatabase` (§4a) |
+| Name the report pages the wipe has just orphaned | `orphanedReports` — they are not deleted, but nothing else distinguishes them |
 | Forecast each model over every entity, **once per window**, writing nothing | `importWindows`, `lastDays`, `forecastModel` |
 | Store the mean of the 90-day runs as a run of its own | `averageRun` |
 | Report 1 into `data/reports/`: the average line alone | `reportPath`, then `writeComparison` |
-| Move the CSV to `data/imported/` | `fileAway`, never overwrites |
+| Move the CSV to `data/imported/` | `fileAway`, never overwrites, and `chmod 0600` first — the derived data was protected and the client's raw numbers were not |
 | Reports go to `data/reports/`, never beside the export | `reportPath` — `data/` is meant to show at a glance what is still unread |
 | Train `chronos2ft` on the **full** history, then report 2: the average plus `chronos2ft@full` | `trainFinetune`, then `writeComparison` again |
+
+**`checkWritable` is first for a reason.** The wipe used to come before anything
+had proved the report could be written, so a `data/reports/` gone read-only — a
+synced folder is the everyday cause — deleted the previous account's runs, stored
+the new ones and produced no report: a state the `finish-an-import` skill had no
+row for. Probing the folder up front closes the everyday cause. **It does not
+close the window itself.** Between the last `storeRun` and `writeComparison` the
+database has already been replaced, and a Ctrl-C there — which is exactly when
+someone reaches for it, the models having just finished printing — leaves runs
+stored and no report. `report` finishes the job from what is stored; re-importing
+throws it away. Both the interrupt message and the skill say so.
+
+**Long lists are capped.** `listSome` prints twelve names and counts the rest, and
+`cap12` does the same for the report's excluded list. A 20,000-campaign export put
+308,935 bytes on one terminal line — 99.4% of the whole run's output — scrolling
+away the `forecasting:` line §4b tells people to read, and made a 367 KB page for
+a one-series forecast. The full list is in the database, which is where a list
+that long belongs.
 
 **The table is one file's job, and `cmdImport` stops at the first file that
 fails.** `pendingFiles` sorts the folder's CSVs by name and calls `importOne` in
@@ -1306,6 +1326,12 @@ FROM raw
 WHERE source='google-ads' AND json_extract(data,'$."Campaign status"')='Enabled';
 ```
 
+**`runs` prints local time, the database stores UTC.** `localTime` converts on the
+way out. `runs` was the only command reporting in UTC, so one import stamped
+2026-09-25 on the filed CSV and the report and 2026-09-26 in `runs`, and "when did
+it last run?" answered with tomorrow. Comparing `runs` output against a `sqlite3`
+query on `created_at` will therefore show an offset, and that is expected.
+
 ## 4b. How a column is classified
 
 In order. The first rule that matches wins, and whichever applied is printed.
@@ -1739,16 +1765,22 @@ wrong answer that looked right.
 ## 7. Measured facts (do not re-derive or guess)
 
 - A forecast takes **~3 seconds** whether the horizon is 7 days or 400 — almost all
-  of it is loading the model. Hence the 5-minute timeout is ~100x headroom.
-  **That timeout covers the reply only.** It lives in `readLine`; `startWorker`
-  waits for the handshake with a bare blocking `Scan()` and no deadline, so a
-  worker that stalls *while loading* rather than exiting hangs the command
-  forever, with nothing printed after the model library's own progress bar.
-  Measured: a fixture that sleeps without printing a handshake was still blocked
-  after 20s. A worker that dies before the handshake is handled and tested
-  (`testdata/badworkers/nohandshake_worker.py`); one that never returns is neither, since
-  `testdata/badworkers/hang_worker.py` sends its handshake first. If a model command sits silent for minutes, suspect
-  that shape: Ctrl-C and check the worker's startup path, not the forecast.
+  of it is loading the model. Hence `forecastTimeout`, 5 minutes, is ~100x
+  headroom on the reply.
+  **Both waits are bounded now.** `startupTimeout` (3 minutes) bounds the
+  handshake read in `startWorker`; it was a bare blocking `Scan()`, so a worker
+  that stalled *while loading* -- a hung cache mount, a sha256 re-read on a
+  stalled volume -- hung the whole command forever with nothing printed after the
+  library's progress bar, and an `import` starts six workers. It is generous on
+  purpose: it exists to end an infinite wait, not to hurry a cold disk. On expiry
+  the process is killed and the message names the model, the limit and the
+  worker's own last stderr line.
+  A worker that *dies* before the handshake is handled separately and tested
+  (`testdata/badworkers/nohandshake_worker.py`). **There is no fixture for one
+  that stalls before it** -- `testdata/badworkers/hang_worker.py` sends its
+  handshake first -- so `startupTimeout` itself is exercised by nothing
+  automatic. It is a `const`, which is why a test cannot shorten it the way
+  `TestStuckModelTimesOutInsteadOfHanging` shortens `w.Timeout`.
 - Python side installed: **~820 MB** (torch is ~570 MB of it). Weights: **1.7 GB**.
 - A clean `./install.sh` measured **182 seconds** on a fast connection.
 - `go test .` **33s**; `go test -race -count=2 .` **71s**; `sh examples/walkthrough.sh`
@@ -1884,8 +1916,9 @@ from HEAD. Build first, or it is theatre.
 
 **Thirteen tests vanish silently without `./install.sh`.** Measured on a fresh
 clone with no `models/.venv` — exactly what `share.sh` hands someone — the suite
-exits 0 and prints `ok` in about a second: 158 pass and 15 skip, against 172
-passing and 1 skipping here. Two of those 15 skip anyway
+exits 0 and prints `ok` in about a second, against 219 passing and 1 skipping
+here. Count the skips with `go test -count=1 -v . | grep -c -- '--- SKIP'`; a
+plain run prints no skip count at all. Two of them skip anyway
 (`TestDefaultsAnchorToTheInstallNotTheShell`, and `TestBinaryWorksFromAnotherDirectory`
 because a clone has no binary). What actually goes missing is every protocol
 test, both weights tests and the perturbation test: the checks that prove the
