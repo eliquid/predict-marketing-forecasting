@@ -194,6 +194,10 @@ func importOne(path, dir, dbPath string, horizon, history int, skipFinetune, fre
 		fmt.Printf("  %d rows per day, split by %q\n", data.RowsPerDay, data.GroupBy)
 	}
 	fmt.Printf("  forecasting: %s\n", withConcepts(data, data.Names))
+	if len(data.Inactive) > 0 {
+		fmt.Printf("  note: the (account) series includes those campaigns' history, so " +
+			"its forecast assumes they keep spending. Per-campaign figures do not.\n")
+	}
 	if len(data.Renamed) > 0 {
 		fmt.Printf("  renamed during this period, kept as one series: %s\n",
 			strings.Join(data.Renamed, ", "))
@@ -284,6 +288,9 @@ func importOne(path, dir, dbPath string, horizon, history int, skipFinetune, fre
 		if before > 0 {
 			fmt.Printf("  cleared %d earlier run(s) from %s -- an import starts a fresh account\n",
 				before, filepath.Base(dbPath))
+			for _, f := range orphanedReports(dir, name) {
+				fmt.Printf("  superseded, and no longer backed by the database: %s\n", f)
+			}
 		}
 	}
 	if err := saveData(db, name, data); err != nil {
@@ -593,6 +600,32 @@ func trainFinetune(csv string, metrics []string, groupBy, labelBy string) error 
 	return cmd.Run()
 }
 
+// orphanedReports names report files left over from a previous import, whose runs
+// the wipe has just deleted.
+//
+// They are not touched -- deleting someone's file is not this command's business --
+// but they are named, because nothing else distinguishes them. Two imports leave
+// two same-shaped files of near-identical size side by side in data/reports/, and
+// opening the wrong one means sending a client a forecast whose underlying data no
+// longer exists and which `report` will refuse to redraw. The only tell before
+// this was a timestamp in the footer below the chart.
+func orphanedReports(dir, keep string) []string {
+	entries, err := os.ReadDir(filepath.Join(dir, reportsName))
+	if err != nil {
+		return nil
+	}
+	var out []string
+	for _, e := range entries {
+		n := e.Name()
+		if e.IsDir() || !strings.HasSuffix(n, ".html") || strings.HasPrefix(n, keep+"_") {
+			continue
+		}
+		out = append(out, filepath.Join(reportsName, n))
+	}
+	sort.Strings(out)
+	return out
+}
+
 // fileAway moves a CSV into data/imported/, never overwriting an earlier import
 // of the same name.
 func fileAway(path, dir string) (string, error) {
@@ -606,6 +639,12 @@ func fileAway(path, dir string) (string, error) {
 		ext := filepath.Ext(base)
 		target = filepath.Join(dest, fmt.Sprintf("%s-%s%s",
 			strings.TrimSuffix(base, ext), time.Now().Format("2006-01-02-150405"), ext))
+	}
+	// The database and the reports are deliberately 0600, but a rename carries the
+	// download's own mode, so the one file holding the client's raw numbers was
+	// arriving 0644 while everything derived from it was protected.
+	if err := os.Chmod(path, 0o600); err != nil && !os.IsNotExist(err) {
+		return "", err
 	}
 	if err := os.Rename(path, target); err != nil {
 		return "", fmt.Errorf("moving %s into %s: %w", base, dest, err)

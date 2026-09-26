@@ -100,6 +100,27 @@ func rerenderSeries(db *sql.DB, name, dir string, history int) error {
 		return err
 	}
 
+	// A run and the stored history are tied together only by the series name, and
+	// saveData replaces a whole series. Forecast two different exports under one
+	// -series and the second replaces the first's history while the first's run
+	// survives, so redrawing produced a page whose forecast came from one account
+	// and whose campaign list came from the other, every panel reading "observed
+	// last 0 days", exit 0, no warning. Refuse instead: the run genuinely has no
+	// history to draw against.
+	drawable := 0
+	for _, n := range data.Names {
+		if len(data.Series(AccountEntity, n)) > 0 {
+			drawable++
+		}
+	}
+	if drawable == 0 {
+		return fmt.Errorf("the stored runs for %q forecast %s, but the stored history "+
+			"for %q holds none of those. Something has been forecast twice under one "+
+			"series name, and the later import replaced the history the earlier run "+
+			"was made from. Re-run the forecast, or use a different -series name",
+			name, strings.Join(data.Names, ", "), name)
+	}
+
 	// Draw what `import` draws, or a redraw silently disagrees with the page it
 	// replaces. Every window run is stored so `accuracy` can score it, but the
 	// reports show the average and, on the second, the fine-tune (AGENTS.md 2c).

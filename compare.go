@@ -65,14 +65,19 @@ type comparison struct {
 // comparedModel is a row in the provenance table, so the page can still say
 // exactly what produced every line on it.
 type comparedModel struct {
-	Name            string
-	Colour          string
-	Repo            string
-	Revision        string
-	Weights         string
-	Stroke          string // css border-top-style, matching the line's dashes
-	TrainedThrough  string // chronos2ft only: the last day it was trained on
-	IsFineTuned     bool
+	Name           string
+	Colour         string
+	Repo           string
+	Revision       string
+	Weights        string
+	Stroke         string // css border-top-style, matching the line's dashes
+	TrainedThrough string // chronos2ft only: the last day it was trained on
+	IsFineTuned    bool
+	// Derived explains a run that is not a model at all but a combination of
+	// others. The provenance table promises to say what produced every line, and
+	// for the one line report 1 draws it was printing three empty cells and
+	// "pretrained, unmodified" -- which is not true of an average.
+	Derived         string
 	QuantileCount   int
 	VersionsSummary string
 }
@@ -143,6 +148,10 @@ func writeComparison(path string, runs []forecastRun, data *Data, days []string,
 		}
 		if t := trainedThrough(r.Run.ModelInfo); t != "" {
 			m.TrainedThrough, m.IsFineTuned = t, true
+		}
+		if of := averagedFrom(r.Run.ModelInfo); len(of) > 0 {
+			m.Derived = "the mean of " + strings.Join(of, " and ") +
+				", quantile by quantile; not a model of its own"
 		}
 		var vs []string
 		for k, v := range r.Shake.Versions {
@@ -265,6 +274,30 @@ func trainedThrough(info []byte) string {
 		return s
 	}
 	return ""
+}
+
+// averagedFrom lists the runs a derived run is the mean of. import.go records them
+// under "averaged" in the run's model_info, which is the only place the fact is
+// kept -- the stored model name says "average@90d" but not of what.
+func averagedFrom(info []byte) []string {
+	if len(info) == 0 {
+		return nil
+	}
+	var m map[string]any
+	if err := json.Unmarshal(info, &m); err != nil {
+		return nil
+	}
+	raw, ok := m["averaged"].([]any)
+	if !ok {
+		return nil
+	}
+	var out []string
+	for _, v := range raw {
+		if s, ok := v.(string); ok {
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 // sharedEntities returns the entities every run forecast, account first so the

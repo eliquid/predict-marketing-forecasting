@@ -285,11 +285,24 @@ func openDB(path string) (*sql.DB, error) {
 	current, err := checkSchema(db, path)
 	if err != nil {
 		db.Close()
+		if strings.Contains(err.Error(), "readonly database") {
+			return nil, fmt.Errorf("%s is in WAL mode, and WAL needs to create a "+
+				"%s-shm file beside it, which this directory does not allow. Copy the "+
+				"database somewhere writable and open it there", path, filepath.Base(path))
+		}
 		return nil, err
 	}
 	// A file already stamped at this version was created by this schema, so there
-	// is nothing to add. Skipping both statements keeps opening it a pure read,
-	// which is what lets a database on read-only media still be queried.
+	// is nothing to add, and opening it does no writing of its own.
+	//
+	// That is not the same as working on read-only media, and this comment used to
+	// claim it was. Every database this tool writes is in WAL mode, and WAL needs
+	// to create a -shm sidecar next to the file, so a *writable file in a
+	// read-only directory* cannot be opened at all -- SQLite reports "attempt to
+	// write a readonly database" while reading the schema version, which points at
+	// the schema rather than at the sidecar that actually failed. openDB says so
+	// now rather than leaving the reader to guess. Copy the file somewhere
+	// writable to read it.
 	if !current {
 		if _, err := db.Exec(schema); err != nil {
 			db.Close()

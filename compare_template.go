@@ -146,8 +146,11 @@ var compareTmpl = template.Must(template.New("compare").Parse(`<!doctype html>
     {{if gt (len .Models) 1}}{{len .Models}} models forecast{{else}}One line
     forecasts{{end}} the next {{.Horizon}} days. The last day of real data is
     <b>{{.AsOf}}</b>; everything to the right of the divider is predicted, not
-    observed. The shaded band is the q10&ndash;q90 range: the models put nine
-    times in ten inside it, and the line through the middle is the median.
+    observed. The shaded band is the q10&ndash;q90 range &mdash; an 80% interval by
+    construction, not 90% &mdash; and the line through the middle is the median.
+    Treat the band as the models&rsquo; own optimism about their spread rather than
+    a measured error bar: on this project&rsquo;s own backtest the real coverage
+    came out well below 80%, and the misses ran high more often than low.
     {{if gt (len .Models) 1}}Where the lines separate, they disagree — that gap
     is the honest measure of how sure any of this is.{{else}}The wider the band,
     the less sure the forecast.{{end}}
@@ -158,10 +161,17 @@ var compareTmpl = template.Must(template.New("compare").Parse(`<!doctype html>
     <div class="cap">Not forecast</div>
     <strong>{{range $i, $e := .Excluded}}{{if $i}}, {{end}}{{$e}}{{end}}</strong>
     — switched off in the export, or nothing they record moved during this
-    period. Their full history is still stored and still counted in the account
-    total; a campaign that is paused will spend nothing until someone turns it
+    period. A campaign that is paused will spend nothing until someone turns it
     back on, which is a decision rather than something to predict. That is also
     why they are not in the dropdown above.
+    <br><br>
+    <strong>Read the (account) line with this in mind.</strong> The account series
+    is the sum of every campaign, including these, so its history contains their
+    spend — and the forecast of that series therefore carries on as though they
+    were still running. Where a large campaign has just been switched off, the
+    account forecast will be high by roughly its share. The per-campaign figures
+    below do not have this problem: they cover only the campaigns that are
+    actually running.
   </div>
   {{end}}
 
@@ -219,7 +229,7 @@ var compareTmpl = template.Must(template.New("compare").Parse(`<!doctype html>
         <tr>
           <td><i class="swatch" style="border-top-color:{{.Colour}};border-top-style:{{.Stroke}}"></i>{{.Name}}</td>
           <td>{{.Repo}}</td><td>{{.Revision}}</td><td>{{.Weights}}</td>
-          <td>{{if .IsFineTuned}}trained on your data through {{.TrainedThrough}}{{else}}pretrained, unmodified{{end}}</td>
+          <td>{{if .IsFineTuned}}trained on your data through {{.TrainedThrough}}{{else if .Derived}}{{.Derived}}{{else}}pretrained, unmodified{{end}}</td>
         </tr>
       {{end}}
       </tbody>

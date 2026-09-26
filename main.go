@@ -377,6 +377,10 @@ func cmdForecast(args []string) error {
 	for _, line := range exclusionLines(data) {
 		fmt.Println(line)
 	}
+	if len(data.Inactive) > 0 {
+		fmt.Printf("  note: the (account) series includes those campaigns' history, so " +
+			"its forecast assumes they keep spending. Per-campaign figures do not.\n")
+	}
 	if len(data.Renamed) > 0 {
 		fmt.Printf("  renamed during this period, kept as one series: %s\n",
 			strings.Join(data.Renamed, ", "))
@@ -393,9 +397,12 @@ func cmdForecast(args []string) error {
 		fmt.Printf("  stored, not forecast (you set these, you do not predict them): %s\n",
 			strings.Join(data.Settings, ", "))
 	}
-	if len(data.Averaged) > 0 {
-		fmt.Printf("  rates, averaged across campaigns for the account figure: %s\n",
-			strings.Join(data.Averaged, ", "))
+	// Only the ones this run is actually forecasting: -columns narrows the run, and
+	// naming rates it is not touching reads as though they were included.
+	if shown := intersect(data.Averaged, metrics); len(shown) > 0 {
+		fmt.Printf("  rates, blended across campaigns for the account figure "+
+			"(weighted by their own denominator where the file has it): %s\n",
+			strings.Join(shown, ", "))
 	}
 	if len(data.Skipped) > 0 {
 		fmt.Printf("  stored but not numbers: %s\n", strings.Join(data.Skipped, ", "))
@@ -762,7 +769,7 @@ func known(db *sql.DB, column, plural, value, series string) error {
 		return err
 	}
 	if len(have) == 0 {
-		return fmt.Errorf("no forecasts stored yet -- run `predictmarketing forecast` first")
+		return fmt.Errorf("no forecasts stored yet -- run `./predictmarketing forecast` first")
 	}
 	return fmt.Errorf("-%s %q: not one of the %s forecast (have: %s)",
 		column, value, plural, strings.Join(have, " | "))

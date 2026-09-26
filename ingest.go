@@ -224,6 +224,80 @@ func nearDuplicates(values map[string]bool, want int) string {
 	return ""
 }
 
+// sniffNotACSV looks at the first bytes before anything tries to read the file as
+// text, and names the file it actually is.
+//
+// Every one of these used to arrive as "line 1: need at least 2 columns, got 1",
+// followed by advice to delete the title rows -- impossible advice for a workbook,
+// which has no lines to delete, and the wrong advice for a UTF-16 export, where
+// deleting them does not help either. Renaming a workbook to .csv instead of
+// re-saving it is one of the most common mistakes there is, and it was getting the
+// least useful message of any of them.
+//
+// Tabs are checked across the first lines, not just the first: a platform export
+// opens with a title and a date range, and those rows have no tabs in them, so
+// looking only at line 1 hid the one message that would have helped. That is
+// exactly the file the README calls the most common reason a real export will not
+// load, and it was the one the check missed.
+func sniffNotACSV(path string, br *bufio.Reader) error {
+	head, _ := br.Peek(8192)
+	switch {
+	case bytes.HasPrefix(head, []byte("PK\x03\x04")), bytes.HasPrefix(head, []byte("PK\x05\x06")):
+		return fmt.Errorf("%s is an Excel workbook (or another zip file), not a CSV. "+
+			"Renaming a .xlsx to .csv does not convert it. Open it and use "+
+			"File > Save As, choosing CSV", path)
+	case bytes.HasPrefix(head, []byte("%PDF")):
+		return fmt.Errorf("%s is a PDF, not a CSV. Download the export again and "+
+			"choose the CSV format", path)
+	case bytes.HasPrefix(head, []byte{0xFF, 0xFE}), bytes.HasPrefix(head, []byte{0xFE, 0xFF}):
+		return fmt.Errorf("%s is UTF-16, not a CSV this can read. In Google Ads this "+
+			"is the \".csv (Excel)\" download, which is tab-separated UTF-16 despite "+
+			"the name -- take the plain \".csv\" one instead. To convert what you have: "+
+			"iconv -f UTF-16 -t UTF-8 %q | tr '\\t' ',' > fixed.csv", path, path)
+	}
+
+	// Separator, judged over the first lines rather than only the first.
+	lines := strings.SplitN(string(head), "\n", 25)
+	tabs, semis, commas := 0, 0, 0
+	for _, l := range lines {
+		tabs += strings.Count(l, "\t")
+		semis += strings.Count(l, ";")
+		commas += strings.Count(l, ",")
+	}
+	if commas == 0 && tabs > 0 {
+		return fmt.Errorf("%s has tabs and no commas, so it is tab-separated, not a "+
+			"CSV. In Google Ads this is the \".csv (Excel)\" download -- take the plain "+
+			"\".csv\" one instead, or convert it: tr '\\t' ',' < %q > fixed.csv", path, path)
+	}
+	if commas == 0 && semis > 0 {
+		return fmt.Errorf("%s has semicolons and no commas, so it is semicolon-separated. "+
+			"Re-export it with commas, or convert it", path)
+	}
+	return nil
+}
+
+// clean strips control characters from a value that came out of the file.
+//
+// A campaign name is data, and it was being printed straight to the terminal. A
+// name containing ESC[2K ESC[1G erased the line above it as it was written, and
+// the line it erased was `for N: ...` -- the one naming which campaigns are in the
+// forecast, printed by the same mechanism as the "switched off in the export"
+// warning. A carriage return did the same thing. The truncator could also cut a
+// name mid-escape, leaving the colour set for the rest of the session.
+//
+// Tabs and newlines go too: both break the column layout the output is read in.
+func clean(s string) string {
+	if strings.IndexFunc(s, func(r rune) bool { return r < 0x20 || r == 0x7f }) < 0 {
+		return s
+	}
+	return strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f {
+			return -1
+		}
+		return r
+	}, s)
+}
+
 // whyOneColumn guesses why a line did not split, because the two files that
 // reach this are both routine: an export saved with a different separator, and a
 // platform export that opens with a title and a date range before the header.
@@ -294,7 +368,34 @@ func parseCell(s string) (float64, bool, error) {
 	neg := strings.HasPrefix(s, "(") && strings.HasSuffix(s, ")")
 	s = strings.Trim(s, "()")
 	pct := strings.HasSuffix(s, "%")
-	s = strings.NewReplacer("$", "", "£", "", "€", "", ",", "", "%", "", " ", "").Replace(s)
+	s = strings.NewReplacer("$", "", "£", "", "€", "", "%", "", " ", "", "\u00a0", "").Replace(s)
+
+	// Which separator is the decimal point. When a value carries both, the LAST one
+	// is it: "1,234.56" is US and "1.234,56" is European, and both are unambiguous.
+	// Stripping every comma as a thousands separator read "1.234,56" as 1.23456 --
+	// a thousandfold error, stored, charted and forecast without a word, on every
+	// cell of a European export.
+	//
+	// With only commas it comes down to the last group: "1,200" is genuinely
+	// ambiguous and stays thousands, which is the existing reading, but "1234,56"
+	// cannot be thousands because the group is not three digits long.
+	dot, comma := strings.LastIndex(s, "."), strings.LastIndex(s, ",")
+	euro := (dot >= 0 && comma > dot) ||
+		(comma >= 0 && dot < 0 && len(s)-comma-1 != 3)
+	if euro {
+		s = strings.ReplaceAll(s, ".", "")
+		s = strings.Replace(s, ",", ".", 1)
+	} else {
+		s = strings.ReplaceAll(s, ",", "")
+	}
+
+	// ParseFloat is Go's literal grammar, not an ad platform's. It accepts hex
+	// floats ("0x1p4" = 16) and underscores, neither of which any export emits, and
+	// reading one as a number turns a corrupt cell into a plausible measurement.
+	if strings.ContainsAny(s, "xX_") {
+		return 0, pct, fmt.Errorf("not a number: %q", s)
+	}
+
 	if noData[strings.ToLower(s)] {
 		return 0, pct, nil // no data is 0, not a failure
 	}
@@ -315,6 +416,18 @@ func parseCell(s string) (float64, bool, error) {
 	}
 	return v, pct, nil
 }
+
+// Bounds on the shape of an export. Neither is a judgement about anyone's data:
+// they exist because growth on the ingest path is multiplicative -- entities times
+// metrics times charts, all inlined into one HTML file -- so a wide or malformed
+// file degrades into swap rather than into a message. Measured before they
+// existed: a 850 KB file of 5,000 columns reached 3.9 GB resident and produced a
+// 12 MB single-page report. Real exports are nowhere near these: the Google one
+// here has 13 columns, the Meta one 12.
+const (
+	maxColumns   = 512
+	maxCellBytes = 1 << 20
+)
 
 // filledLine marks a row -fill-absent synthesised rather than read from the file.
 const filledLine = -1
@@ -343,9 +456,13 @@ func readCSVFilling(path string, want []string, groupBy string, fillAbsent bool)
 	}
 	defer f.Close()
 
+	br := bufio.NewReader(f)
+	if err := sniffNotACSV(path, br); err != nil {
+		return nil, err
+	}
+
 	// Excel writes a UTF-8 BOM, which otherwise becomes part of the first header
 	// cell and breaks quoted-field parsing on the very first line.
-	br := bufio.NewReader(f)
 	if b, err := br.Peek(3); err == nil && bytes.Equal(b, []byte{0xEF, 0xBB, 0xBF}) {
 		br.Discard(3)
 	}
@@ -373,6 +490,20 @@ func readCSVFilling(path string, want []string, groupBy string, fillAbsent bool)
 			return nil, fmt.Errorf("%s line %d: %w", path, line+1, err)
 		}
 		line++
+		for _, cell := range rec {
+			if len(cell) > maxCellBytes {
+				return nil, fmt.Errorf("%s line %d: a single value is %d bytes, over the "+
+					"%d-byte limit. A real export does not contain one; this file is "+
+					"malformed or is not the export you meant",
+					path, line, len(cell), maxCellBytes)
+			}
+		}
+		if len(rec) > maxColumns {
+			return nil, fmt.Errorf("%s line %d: %d columns, over the limit of %d. Every "+
+				"column becomes a series per campaign and a chart in the report, so a "+
+				"file this wide turns into gigabytes. Export the columns you need",
+				path, line, len(rec), maxColumns)
+		}
 		if len(rec) < 2 {
 			return nil, fmt.Errorf("%s line %d: need at least 2 columns, got %d%s",
 				path, line, len(rec), whyOneColumn(rec[0]))
@@ -392,8 +523,31 @@ func readCSVFilling(path string, want []string, groupBy string, fillAbsent bool)
 							path, i+1)
 					}
 				}
-				header = rec
-				continue
+				// No date in the first cell. If no cell in this row is a date
+				// either, the file has no dates in it at all -- a summary export
+				// with one row per campaign, which is a different download rather
+				// than a broken one. Saying "unrecognised date \"Brand Search\""
+				// points at the campaign name and reads as though the names are
+				// wrong.
+				if line == 1 {
+					header = rec
+					continue
+				}
+			}
+		}
+		if line == 2 {
+			anyDate := false
+			for _, cell := range rec {
+				if _, ok := tryLayouts(strings.TrimSpace(cell), allLayouts()); ok {
+					anyDate = true
+					break
+				}
+			}
+			if !anyDate {
+				return nil, fmt.Errorf("%s: no column holds a date. This looks like a "+
+					"summary export -- one row per campaign, with no day on it -- and "+
+					"there is no time series in it to forecast. Download it again "+
+					"segmented by day", path)
 			}
 		}
 		if width == 0 {
@@ -526,7 +680,7 @@ func readCSVFilling(path string, want []string, groupBy string, fillAbsent bool)
 		}
 		rec := map[string]string{}
 		for c := 0; c < len(rw.raw); c++ {
-			rec[columnName(header, c)] = strings.TrimSpace(rw.raw[c])
+			rec[columnName(header, c)] = clean(strings.TrimSpace(rw.raw[c]))
 		}
 		d.Raw = append(d.Raw, RawRow{Line: rw.line, Day: rw.day, Data: rec})
 	}
@@ -649,6 +803,30 @@ func readCSVFilling(path string, want []string, groupBy string, fillAbsent bool)
 	}
 	addTo(AccountEntity) // always first
 
+	// Which column is the natural denominator of each rate, so the account figure
+	// can be the real blended one. Empty when the file does not carry it, and the
+	// mean is then unweighted over the campaigns that actually reported.
+	rateWeight := map[string]int{}
+	rateNum := map[string][]float64{}
+	rateDen := map[string][]float64{}
+	for k, n := range stored {
+		if !mean[n] {
+			continue
+		}
+		rateNum[n] = make([]float64, len(d.Days))
+		rateDen[n] = make([]float64, len(d.Days))
+		want := rateDenominator(n)
+		if want == "" {
+			continue
+		}
+		for k2, n2 := range stored {
+			if k2 != k && d.Concept[n2] == want {
+				rateWeight[n] = usable[k2]
+				break
+			}
+		}
+	}
+
 	groupCol := -1
 	for c, n := range names {
 		if n == group {
@@ -688,7 +866,7 @@ func readCSVFilling(path string, want []string, groupBy string, fillAbsent bool)
 		di := dayIndex[rw.day]
 		entity := AccountEntity
 		if groupCol >= 0 {
-			entity = strings.TrimSpace(rw.raw[groupCol+1])
+			entity = clean(strings.TrimSpace(rw.raw[groupCol+1]))
 			if lbl, ok := d.Label[entity]; ok {
 				entity = lbl // the name it goes by now, not the ID or an older name
 			}
@@ -700,14 +878,41 @@ func readCSVFilling(path string, want []string, groupBy string, fillAbsent bool)
 			n := stored[k]
 			v := cols[c][i]
 			if mean[n] {
-				// running mean, so the account figure is the average across the
-				// day's campaigns rather than their total
-				d.Values[AccountEntity][n][di] += v / float64(rowsPerDay)
+				// A rate does not add up across campaigns, and it does not plainly
+				// average either: the account's CTR is total clicks over total
+				// impressions, not the mean of each campaign's CTR. Weighting each
+				// campaign's rate by its own denominator gives exactly that, because
+				// sum(rate_i * w_i) / sum(w_i) is sum(numerator_i) / sum(w_i).
+				//
+				// Measured on a three-campaign day, unweighted against the true
+				// blended figure: CTR 4.7167 vs 4.8869, Avg. CPC 1.6267 vs 2.1975
+				// (26% low), ROAS 2.9167 vs 3.5292. A blended CPC reported a quarter
+				// low reads as headroom to bid up.
+				w := 1.0
+				if wc, ok := rateWeight[n]; ok {
+					w = cols[wc][i]
+				} else if rw.line == filledLine {
+					// No weight column to fall back on. A row -fill-absent invented
+					// is not a campaign that reported a rate, so it is left out of
+					// the mean rather than counted as a zero.
+					w = 0
+				}
+				rateNum[n][di] += v * w
+				rateDen[n][di] += w
 			} else {
 				d.Values[AccountEntity][n][di] += v
 			}
 			if entity != AccountEntity {
 				addTo(entity)[n][di] += v
+			}
+		}
+	}
+
+	// The weighted rates, now that every campaign has been seen.
+	for n, num := range rateNum {
+		for di := range num {
+			if den := rateDen[n][di]; den != 0 {
+				d.Values[AccountEntity][n][di] = num[di] / den
 			}
 		}
 	}
@@ -1028,6 +1233,38 @@ func (e tooShort) Error() string {
 // time and every forecast date after it is wrong. Filling the gap would be
 // inventing data, so the only honest options are to refuse and say where.
 func checkConsecutiveDays(path string, days []string) error {
+	// Every step the same size, and bigger than a day, is not a file with holes in
+	// it: it is an export segmented by week or by month. Telling someone to fill
+	// the gaps with zeros is then the worst possible advice -- it makes six days in
+	// every seven a real zero, and the forecast follows them to the floor. Measured
+	// on a weekly file filled that way: day 1 came back at 1,037.93 and every day
+	// after it between 1.59 and 3.49, with negative lower bounds.
+	steps := map[int]bool{}
+	for i := 1; i < len(days); i++ {
+		prev, _ := time.Parse("2006-01-02", days[i-1])
+		cur, _ := time.Parse("2006-01-02", days[i])
+		steps[int(cur.Sub(prev).Hours()/24)] = true
+	}
+	if len(steps) == 1 && len(days) > 2 {
+		for step := range steps {
+			if step == 1 {
+				break
+			}
+			period := fmt.Sprintf("every %d days", step)
+			switch {
+			case step == 7:
+				period = "weekly"
+			case step >= 28 && step <= 31:
+				period = "monthly"
+			}
+			return fmt.Errorf("%s: every row is %d days after the one before it, so "+
+				"this export is segmented %s, not daily. Download it again segmented "+
+				"by day. Do not fill the gaps with zeros: that would make %d days in "+
+				"every %d a real zero, and the forecast would follow them down",
+				path, step, period, step-1, step)
+		}
+	}
+
 	for i := 1; i < len(days); i++ {
 		prev, _ := time.Parse("2006-01-02", days[i-1])
 		cur, _ := time.Parse("2006-01-02", days[i])
@@ -1213,8 +1450,13 @@ var wantedMetrics = []struct {
 	{"rate", false, []string{"ctr", "cvr", "roas", "rate", "ratio", "share",
 		"percent", "avg", "average", "mean"}},
 	// Before "conversions", or "conversion value" is counted as conversions.
+	// "conv value" as well as "conversion value": Google Ads writes its revenue
+	// column "Conv. value", which normalises to "conv value" and was matching
+	// "conv" from the conversions group below -- revenue counted as a conversion
+	// count. Both are additive so no total was wrong, but the label was.
 	{"revenue", true, []string{"revenue", "conversion value", "conversions value",
-		"purchase value", "purchases value", "sales", "turnover"}},
+		"conv value", "convs value", "purchase value", "purchases value", "sales",
+		"turnover"}},
 	{"conversions", true, []string{"conversions", "conversion", "conv", "purchases",
 		"purchase", "results", "result", "leads", "lead", "signups", "sign ups",
 		"installs", "install", "registrations", "add to cart", "adds to cart",
@@ -1255,6 +1497,27 @@ func normaliseColumn(name string) string {
 // averaged across campaigns rather than summed.
 func metricConcept(name string) (string, bool, bool) {
 	n := normaliseColumn(name)
+
+	// "A / B" is a ratio however it is spelled, and Google Ads spells its two most
+	// important ones that way: "Cost / conv." is CPA and "Conv. value / cost" is
+	// ROAS. Normalising drops the slash, so "Cost / conv." became " cost conv ",
+	// matched "conv" from the conversions group before "cost per" could fire, and
+	// was **summed** across campaigns. Measured on a three-campaign day: CPA stored
+	// as 74.96 against a true 31.78, and ROAS as 8.75 against a true 3.53 -- while
+	// the same file's "ROAS" column, which does match the rate group, stored 2.92.
+	// Two spellings of one metric, two wrong answers, on the page together.
+	if strings.Contains(name, "/") {
+		for _, part := range strings.Split(name, "/") {
+			for _, m := range wantedMetrics {
+				for _, pat := range m.patterns {
+					if strings.Contains(normaliseColumn(part), " "+pat+" ") {
+						return "ratio", false, true
+					}
+				}
+			}
+		}
+	}
+
 	for _, m := range wantedMetrics {
 		for _, pat := range m.patterns {
 			if strings.Contains(n, " "+pat+" ") {
@@ -1367,7 +1630,7 @@ func entityLabels(header, names []string, numeric []bool, rows []row,
 	first := map[string]string{}
 	for _, rw := range rows {
 		id := strings.TrimSpace(rw.raw[groupCol+1])
-		nm := strings.TrimSpace(rw.raw[best+1])
+		nm := clean(strings.TrimSpace(rw.raw[best+1]))
 		if _, ok := first[id]; !ok {
 			first[id] = nm
 		}
@@ -1409,6 +1672,55 @@ func labelKey(d *Data, entity string) string {
 		}
 	}
 	return entity
+}
+
+// rateDenominator names the concept a rate is "per", so the account figure can be
+// the real blended one instead of a plain mean of the campaigns' rates.
+//
+// It is read off the column's own name, which already says it: "A / B" is per B,
+// "cost per X" is per X, and the standard abbreviations each have a fixed
+// denominator. When the file does not carry that column there is nothing to weight
+// by and the mean stays unweighted.
+func rateDenominator(name string) string {
+	n := normaliseColumn(name)
+	if i := strings.LastIndex(name, "/"); i >= 0 {
+		if c, _, ok := metricConceptPlain(name[i+1:]); ok {
+			return c
+		}
+	}
+	switch {
+	case strings.Contains(n, " ctr "), strings.Contains(n, " click through rate "),
+		strings.Contains(n, " cpm "), strings.Contains(n, " cpv "):
+		return "impressions"
+	case strings.Contains(n, " cpc "), strings.Contains(n, " cvr "),
+		strings.Contains(n, " conversion rate "):
+		return "clicks"
+	case strings.Contains(n, " cpa "), strings.Contains(n, " cpl "):
+		return "conversions"
+	case strings.Contains(n, " roas "):
+		return "spend"
+	}
+	if i := strings.Index(n, " per "); i >= 0 {
+		if c, _, ok := metricConceptPlain(n[i+4:]); ok {
+			return c
+		}
+	}
+	return ""
+}
+
+// metricConceptPlain is metricConcept without the slash rule, for asking what one
+// side of a ratio is. Going through metricConcept would answer "ratio" for every
+// part of a name that still contains a slash.
+func metricConceptPlain(name string) (string, bool, bool) {
+	n := normaliseColumn(name)
+	for _, m := range wantedMetrics {
+		for _, pat := range m.patterns {
+			if strings.Contains(n, " "+pat+" ") {
+				return m.concept, m.addable, true
+			}
+		}
+	}
+	return "", true, false
 }
 
 // looksLikeRatio spots columns that are a rate rather than a count. They are
@@ -1626,6 +1938,17 @@ func exclusionLines(d *Data) []string {
 	return out
 }
 
+// intersect keeps the members of list that are also in keep, in list's order.
+func intersect(list, keep []string) []string {
+	var out []string
+	for _, v := range list {
+		if slicesContainsFold(keep, v) {
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
 func slicesContainsFold(list []string, s string) bool {
 	for _, v := range list {
 		if strings.EqualFold(strings.TrimSpace(v), strings.TrimSpace(s)) {
@@ -1643,8 +1966,8 @@ func listOr(items []string, empty string) string {
 }
 
 func columnName(header []string, i int) string {
-	if i < len(header) && strings.TrimSpace(header[i]) != "" {
-		return strings.TrimSpace(header[i])
+	if i < len(header) && clean(strings.TrimSpace(header[i])) != "" {
+		return clean(strings.TrimSpace(header[i]))
 	}
 	if i == 1 {
 		return "value"

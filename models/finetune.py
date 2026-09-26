@@ -97,8 +97,18 @@ def num(s, where=""):
     raw = s.strip()
     neg = raw.startswith("(") and raw.endswith(")")
     t = raw.strip("()")
-    for ch in ("$", "\u00a3", "\u20ac", ",", "%", " "):
+    for ch in ("$", "\u00a3", "\u20ac", "%", " ", "\u00a0"):
         t = t.replace(ch, "")
+    # The last separator is the decimal point: "1,234.56" is US, "1.234,56" is
+    # European. ingest.go's parseCell decides it the same way and has to.
+    dot, comma = t.rfind("."), t.rfind(",")
+    euro = (dot >= 0 and comma > dot) or (comma >= 0 and dot < 0 and len(t) - comma - 1 != 3)
+    if euro:
+        t = t.replace(".", "").replace(",", ".", 1)
+    else:
+        t = t.replace(",", "")
+    if any(c in t for c in "xX_"):
+        sys.exit(f"not a number: {raw!r}{where}")
     if t.lower() in NO_DATA:
         return 0.0  # no data is 0, the same as ingest.go's noData
     try:

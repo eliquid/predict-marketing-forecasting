@@ -345,6 +345,7 @@ func (w *Worker) Forecast(series [][]float64, metrics []string, horizon int,
 		if crossing > w.LastCrossing {
 			w.LastCrossing = crossing
 		}
+		floorAtZero(metrics[m], per)
 	}
 	return resp.Quantiles, nil
 }
@@ -407,6 +408,36 @@ const absurdCrossing = 0.05
 // So crossings are corrected rather than rejected, and the size of the largest
 // correction is returned so the caller can say it happened. A crossing beyond
 // absurdCrossing is not an artefact and is still refused.
+// floorAtZero clamps a forecast that cannot be negative.
+//
+// You cannot spend minus three pounds, or serve minus one impression. A campaign
+// that runs Monday to Friday and stops at the weekend made chronos2 return a
+// median of -2.891 and a q10 of -23.720 for Saturday: the weekly shape was read
+// correctly, and then extrapolated through the floor. Printing a lower estimate of
+// -£23.72 of spend to a client is a credibility problem, and the negative flows on
+// into the account total and into whatever accuracy scores it later.
+//
+// Only the concepts that are physically non-negative. Revenue is deliberately not
+// one of them: a refund is a real negative. Clamping preserves the ordering
+// checkForecast has just verified, since max(0,x) is monotonic.
+func floorAtZero(metric string, days [][]float64) {
+	switch c, _, ok := metricConcept(metric); {
+	case !ok, c == "revenue", c == "rate", c == "ratio":
+		return
+	case c == "spend", c == "impressions", c == "clicks", c == "conversions",
+		c == "cost per":
+	default:
+		return
+	}
+	for _, day := range days {
+		for j, v := range day {
+			if v < 0 {
+				day[j] = 0
+			}
+		}
+	}
+}
+
 func checkForecast(q [][]float64, horizon, nq int) (float64, error) {
 	if len(q) != horizon {
 		return 0, fmt.Errorf("got %d days, expected %d", len(q), horizon)

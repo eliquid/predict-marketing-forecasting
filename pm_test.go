@@ -1484,3 +1484,240 @@ func TestWithoutAnIDTheNameIsTheIdentity(t *testing.T) {
 		t.Errorf("the new name is a campaign that is running; entities = %v", d.Entities)
 	}
 }
+
+// The account's CTR is total clicks over total impressions, never the mean of the
+// campaigns' CTRs. Same for CPC, CPA and ROAS. Weighting each campaign's rate by
+// its own denominator produces exactly the blended figure.
+func TestAccountRatesAreBlendedNotAveraged(t *testing.T) {
+	// Two campaigns, deliberately very different in size so an unweighted mean is
+	// visibly wrong.
+	//   A: cost 300, impr 10000, clicks 100, conv 10  -> CTR 1.00, CPC 3.00, CPA 30
+	//   B: cost  20, impr  1000, clicks  20, conv  1  -> CTR 2.00, CPC 1.00, CPA 20
+	// blended: CTR 100*120/11000 = 1.090909, CPC 320/120 = 2.666667, CPA 320/11 = 29.090909
+	var b strings.Builder
+	b.WriteString("Day,Campaign,Cost,Impr.,Clicks,Conversions,CTR,Avg. CPC,Cost / conv.\n")
+	for i := 0; i < 40; i++ {
+		fmt.Fprintf(&b, "%s,A,300,10000,100,10,1.00,3.00,30.00\n", day(i))
+		fmt.Fprintf(&b, "%s,B,20,1000,20,1,2.00,1.00,20.00\n", day(i))
+	}
+	d, err := readCSV(writeTemp(t, "rates.csv", b.String()), nil, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		metric      string
+		want, naive float64
+	}{
+		{"CTR", 100.0 * 120 / 11000, 1.5},
+		{"Avg. CPC", 320.0 / 120, 2.0},
+		{"Cost / conv.", 320.0 / 11, 25.0},
+	} {
+		got := d.Values[AccountEntity][c.metric][0]
+		if math.Abs(got-c.want) > 1e-9 {
+			t.Errorf("account %s = %v, want %v (the blended figure); the unweighted "+
+				"mean would be %v", c.metric, got, c.want, c.naive)
+		}
+	}
+	// Counts and money still add up.
+	if got := d.Values[AccountEntity]["Cost"][0]; got != 320 {
+		t.Errorf("account Cost = %v, want 320", got)
+	}
+	if got := d.Values[AccountEntity]["Clicks"][0]; got != 120 {
+		t.Errorf("account Clicks = %v, want 120", got)
+	}
+}
+
+// A row -fill-absent invented is not a campaign that reported a rate. Counting it
+// as a zero scaled every account rate by ran/total: measured on the real ragged
+// export, account cost-per-result read 30.40 on a day whose true mean was 60.79.
+func TestFilledRowsDoNotDragTheAccountRateDown(t *testing.T) {
+	var b strings.Builder
+	b.WriteString("Day,Campaign,Cost per thing\n")
+	for i := 0; i < 40; i++ {
+		fmt.Fprintf(&b, "%s,A,10\n", day(i))
+		fmt.Fprintf(&b, "%s,B,20\n", day(i))
+		if i >= 20 { // C only ran for the second half
+			fmt.Fprintf(&b, "%s,C,30\n", day(i))
+		}
+	}
+	d, err := readCSVFilling(writeTemp(t, "ragged.csv", b.String()), nil, "", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Day 0: only A and B reported. No weight column exists, so the mean is
+	// unweighted -- over the two that reported, not the three rows now present.
+	if got := d.Values[AccountEntity]["Cost per thing"][0]; math.Abs(got-15) > 1e-9 {
+		t.Errorf("day 0 account rate = %v, want 15 (mean of 10 and 20). Counting the "+
+			"filled C row as a zero would give 10", got)
+	}
+	if got := d.Values[AccountEntity]["Cost per thing"][39]; math.Abs(got-20) > 1e-9 {
+		t.Errorf("day 39 account rate = %v, want 20 (mean of 10, 20, 30)", got)
+	}
+}
+
+// Which separator is the decimal point. A European export writes "1.234,56" and
+// stripping every comma as a thousands separator read that as 1.23456 -- a
+// thousandfold error on every cell, stored and forecast without a word.
+//
+// "1,200" stays 1200: with only commas and a three-digit tail it is genuinely
+// ambiguous, and thousands is the existing reading. "1234,56" cannot be thousands,
+// because the tail is not three digits.
+func TestDecimalSeparatorIsTheLastOne(t *testing.T) {
+	for _, c := range []struct {
+		in   string
+		want float64
+	}{
+		{"1,234.56", 1234.56}, // US
+		{"1.234,56", 1234.56}, // European
+		{"1.234.567,89", 1234567.89},
+		{"1,234,567.89", 1234567.89},
+		{"1,200", 1200},  // ambiguous, stays thousands
+		{"1234,56", 1234.56}, // tail is not 3 digits, so it is a decimal comma
+		{"0,5", 0.5},
+		{"100.5", 100.5},
+		{"£300", 300},
+		{"(1.234,56)", -1234.56},
+	} {
+		got, _, err := parseCell(c.in)
+		if err != nil {
+			t.Errorf("parseCell(%q) errored: %v", c.in, err)
+			continue
+		}
+		if math.Abs(got-c.want) > 1e-9 {
+			t.Errorf("parseCell(%q) = %v, want %v", c.in, got, c.want)
+		}
+	}
+
+	// Go's float grammar is not an ad platform's. A hex float reads as a plausible
+	// number ("0x1p4" is 16), which turns a corrupt cell into a measurement.
+	for _, bad := range []string{"0x1p4", "0X10", "1_000"} {
+		if v, _, err := parseCell(bad); err == nil {
+			t.Errorf("parseCell(%q) = %v, want an error: no export emits Go literals",
+				bad, v)
+		}
+	}
+}
+
+// The file someone actually has in front of them, named for what it is. Every one
+// of these used to arrive as "line 1: need at least 2 columns, got 1" followed by
+// advice to delete the title rows -- impossible for a workbook, useless for UTF-16.
+func TestNotACSVIsNamedForWhatItIs(t *testing.T) {
+	for _, c := range []struct{ name, body, want string }{
+		{"book.csv", "PK\x03\x04junk", "Excel workbook"},
+		{"doc.csv", "%PDF-1.4\njunk", "PDF"},
+		{"u16.csv", "\xff\xfeD\x00a\x00y\x00", "UTF-16"},
+		// The tab check must look past a title row: a platform export opens with a
+		// title and a date range, and those lines have no tabs in them, so looking
+		// only at line 1 hid the one message that would have helped.
+		{"tabs.csv", "Campaign report\nJan 1 - Dec 31\nDay\tCost\n2026-01-01\t10\n", "tab-separated"},
+		{"semi.csv", "Day;Cost\n2026-01-01;10\n", "semicolon"},
+	} {
+		_, err := readCSV(writeTemp(t, c.name, c.body), nil, "")
+		if err == nil {
+			t.Errorf("%s: accepted, want a refusal naming it", c.name)
+			continue
+		}
+		if !strings.Contains(err.Error(), c.want) {
+			t.Errorf("%s: error should say %q, got: %v", c.name, c.want, err)
+		}
+	}
+}
+
+// A file whose every step is the same size is not a file with holes in it, it is
+// an export segmented by that period. Telling someone to fill the gaps with zeros
+// is then the worst possible advice: measured on a weekly file filled that way,
+// day 1 came back 1037.93 and every day after it between 1.59 and 3.49.
+func TestARegularlySegmentedExportIsNamedAsSuch(t *testing.T) {
+	var b strings.Builder
+	b.WriteString("Day,Cost\n")
+	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	for i := 0; i < 40; i++ {
+		fmt.Fprintf(&b, "%s,%d\n", base.AddDate(0, 0, i*7).Format("2006-01-02"), 100+i)
+	}
+	_, err := readCSV(writeTemp(t, "weekly.csv", b.String()), nil, "")
+	if err == nil {
+		t.Fatal("a weekly export must be refused")
+	}
+	for _, want := range []string{"weekly", "segmented", "Do not fill the gaps"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error should mention %q, got: %v", want, err)
+		}
+	}
+}
+
+// A summary export has one row per campaign and no day on it. Pointing at the
+// campaign name ("unrecognised date \"Brand Search\"") reads as though the names
+// are broken, and sends the reader to Excel to rename campaigns.
+func TestASummaryExportSaysItHasNoDates(t *testing.T) {
+	var b strings.Builder
+	b.WriteString("Campaign,Cost,Clicks\n")
+	for i := 0; i < 40; i++ {
+		fmt.Fprintf(&b, "Campaign %d,%d,%d\n", i, 100+i, i)
+	}
+	_, err := readCSV(writeTemp(t, "summary.csv", b.String()), nil, "")
+	if err == nil {
+		t.Fatal("a file with no dates must be refused")
+	}
+	for _, want := range []string{"no column holds a date", "segmented by day"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error should mention %q, got: %v", want, err)
+		}
+	}
+}
+
+// A campaign name is data, and it was being printed straight to the terminal. A
+// name carrying ESC[2K ESC[1G erased the line above it as it was written -- and
+// that line is the one naming which campaigns are in the forecast.
+func TestControlCharactersInDataNeverReachTheOutput(t *testing.T) {
+	var b strings.Builder
+	b.WriteString("Day,Campaign,Cost\n")
+	for i := 0; i < 40; i++ {
+		fmt.Fprintf(&b, "%s,\"Brand\x1b[2K\x1b[1Gerased\",%d\n", day(i), 100+i)
+		fmt.Fprintf(&b, "%s,\"Sale\rOVERWRITTEN\",%d\n", day(i), 60+i)
+	}
+	d, err := readCSV(writeTemp(t, "ansi.csv", b.String()), nil, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range d.Entities {
+		if strings.ContainsAny(e, "\x1b\r\n\t") {
+			t.Errorf("entity %q still carries control characters", e)
+		}
+	}
+	for _, r := range d.Raw {
+		for k, v := range r.Data {
+			if strings.ContainsAny(k, "\x1b\r\n\t") || strings.ContainsAny(v, "\x1b\r\n\t") {
+				t.Errorf("raw cell %q=%q still carries control characters", k, v)
+			}
+		}
+	}
+}
+
+// Growth on the ingest path is multiplicative -- entities times metrics times
+// charts, all inlined into one HTML file. Measured before the bound existed: a
+// 850 KB file of 5,000 columns reached 3.9 GB resident and produced a 12 MB page.
+func TestAnAbsurdlyShapedFileIsRefusedNotSwallowed(t *testing.T) {
+	var b strings.Builder
+	b.WriteString("Day")
+	for i := 0; i < maxColumns+2; i++ {
+		fmt.Fprintf(&b, ",Cost %d", i)
+	}
+	b.WriteString("\n")
+	for i := 0; i < 3; i++ {
+		b.WriteString(day(i))
+		for j := 0; j < maxColumns+2; j++ {
+			b.WriteString(",1")
+		}
+		b.WriteString("\n")
+	}
+	_, err := readCSV(writeTemp(t, "wide.csv", b.String()), nil, "")
+	if err == nil || !strings.Contains(err.Error(), "over the limit") {
+		t.Errorf("a file of %d columns must be refused, got: %v", maxColumns+3, err)
+	}
+
+	big := "Day,Campaign,Cost\n2026-01-01," + strings.Repeat("x", maxCellBytes+1) + ",10\n"
+	_, err = readCSV(writeTemp(t, "bigcell.csv", big), nil, "")
+	if err == nil || !strings.Contains(err.Error(), "over the") {
+		t.Errorf("an oversized cell must be refused, got: %v", err)
+	}
+}
