@@ -149,8 +149,11 @@ var compareTmpl = template.Must(template.New("compare").Parse(`<!doctype html>
     observed. The shaded band is the q10&ndash;q90 range &mdash; an 80% interval by
     construction, not 90% &mdash; and the line through the middle is the median.
     Treat the band as the models&rsquo; own optimism about their spread rather than
-    a measured error bar: on this project&rsquo;s own backtest the real coverage
-    came out well below 80%, and the misses ran high more often than low.
+    a measured error bar: in backtests on real exports the actual fell inside it
+    far less than 80% of the time. Which way it misses is not fixed &mdash; two
+    backtests on different accounts ran in opposite directions &mdash; so do not
+    read the band as a ceiling or a floor. <code>accuracy</code> measures the
+    direction for <em>your</em> account; nothing on this page can.
     {{if gt (len .Models) 1}}Where the lines separate, they disagree — that gap
     is the honest measure of how sure any of this is.{{else}}The wider the band,
     the less sure the forecast.{{end}}

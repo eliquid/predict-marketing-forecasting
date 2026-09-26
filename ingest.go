@@ -26,6 +26,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf8"
 )
 
@@ -94,6 +95,13 @@ type Data struct {
 	// NotMetrics are numeric columns that are not one of the metrics this tool
 	// forecasts (wantedMetrics). Stored, named on screen, never forecast.
 	NotMetrics []string
+	// Currency is the export's single currency, when it says. Empty when the file
+	// carries no currency column.
+	Currency string
+	// WeightedBy names the column each blended rate was weighted by, empty when it
+	// fell back to an unweighted mean. The difference changes the number by
+	// multiples, so the output has to say which happened.
+	WeightedBy map[string]string
 	// Concept maps each forecast column to which wanted metric it matched, so the
 	// output can show the reasoning rather than just the verdict.
 	Concept map[string]string
@@ -361,24 +369,22 @@ var noData = map[string]bool{
 	"n/a": true, "na": true, "nan": true, "null": true, "nil": true, "none": true,
 }
 
-func parseCell(s string) (float64, bool, error) {
+// normaliseCell strips everything that is decoration -- currency, percent sign,
+// spaces of every width, a parenthesised negative -- and settles which separator
+// is the decimal point. parseCell and cellIsNoData both go through it so they can
+// never disagree about what a cell says.
+func normaliseCell(s string) (string, bool, bool) {
 	s = strings.TrimSpace(s)
-	// Tolerate currency symbols, thousands separators, percentages and
-	// parenthesised negatives, because real ad-platform exports contain them all.
 	neg := strings.HasPrefix(s, "(") && strings.HasSuffix(s, ")")
 	s = strings.Trim(s, "()")
 	pct := strings.HasSuffix(s, "%")
-	s = strings.NewReplacer("$", "", "£", "", "€", "", "%", "", " ", "", "\u00a0", "").Replace(s)
-
-	// Which separator is the decimal point. When a value carries both, the LAST one
-	// is it: "1,234.56" is US and "1.234,56" is European, and both are unambiguous.
-	// Stripping every comma as a thousands separator read "1.234,56" as 1.23456 --
-	// a thousandfold error, stored, charted and forecast without a word, on every
-	// cell of a European export.
-	//
-	// With only commas it comes down to the last group: "1,200" is genuinely
-	// ambiguous and stays thousands, which is the existing reading, but "1234,56"
-	// cannot be thousands because the group is not three digits long.
+	s = strings.NewReplacer("$", "", "£", "", "€", "", "¥", "", "₹", "", "%", "").Replace(s)
+	s = strings.Map(func(r rune) rune {
+		if unicode.IsSpace(r) {
+			return -1
+		}
+		return r
+	}, s)
 	dot, comma := strings.LastIndex(s, "."), strings.LastIndex(s, ",")
 	euro := (dot >= 0 && comma > dot) ||
 		(comma >= 0 && dot < 0 && len(s)-comma-1 != 3)
@@ -388,10 +394,21 @@ func parseCell(s string) (float64, bool, error) {
 	} else {
 		s = strings.ReplaceAll(s, ",", "")
 	}
+	return s, pct, neg
+}
 
-	// ParseFloat is Go's literal grammar, not an ad platform's. It accepts hex
-	// floats ("0x1p4" = 16) and underscores, neither of which any export emits, and
-	// reading one as a number turns a corrupt cell into a plausible measurement.
+// cellIsNoData reports whether a cell is one of the ways an export says it has
+// nothing for it. parseCell reads those as 0, which is right for a count but not
+// for a rate: a campaign that reported no cost-per-purchase has no rate to
+// average, and counting it as a rate of zero pulled the account figure down.
+func cellIsNoData(s string) bool {
+	t, _, _ := normaliseCell(s)
+	return noData[strings.ToLower(t)]
+}
+
+func parseCell(s string) (float64, bool, error) {
+	s, pct, neg := normaliseCell(s)
+
 	if strings.ContainsAny(s, "xX_") {
 		return 0, pct, fmt.Errorf("not a number: %q", s)
 	}
@@ -585,6 +602,16 @@ func readCSVFilling(path string, want []string, groupBy string, fillAbsent bool)
 				whereTheDatesAre(header))
 		}
 		perDay[day]++
+		// Cleaned here, where the row enters, and not later where the entity is
+		// built. Every uniqueness guarantee -- sameCampaignsEveryDay, the "(account)"
+		// refusal, entityLabels' disambiguation -- is established on this string, so
+		// cleaning afterwards meant they were all proved about a different value
+		// than the one used. One invisible byte walked past all three: a campaign
+		// called "\x01(account)" was folded into the total and vanished, and "Alpha"
+		// plus "Alpha\x01" became one campaign holding both their numbers.
+		for i, cell := range rr.rec {
+			rr.rec[i] = clean(cell)
+		}
 		rows = append(rows, row{day: day, line: rr.line, raw: rr.rec})
 	}
 	// stoppedEntities are those whose rows end before the file does -- known to
@@ -725,6 +752,7 @@ func readCSVFilling(path string, want []string, groupBy string, fillAbsent bool)
 	// Sort the numeric columns into what can be forecast and what cannot.
 	d.Percent = map[string]bool{}
 	d.Concept = map[string]string{}
+	d.WeightedBy = map[string]string{}
 	mean := map[string]bool{}
 	usable := make([]int, 0, len(names))
 	// stored is every numeric column kept in the series table, in the same order
@@ -774,6 +802,14 @@ func readCSVFilling(path string, want []string, groupBy string, fillAbsent bool)
 			listOr(d.Settings, "none"), listOr(d.NotMetrics, "none"))
 	}
 
+	// Before the group column is chosen: a currency column is often one of the
+	// candidates, so a mixed-currency file would otherwise be refused as
+	// "several columns could separate them" rather than for the reason that
+	// matters.
+	if err := oneCurrency(path, d); err != nil {
+		return nil, err
+	}
+
 	// Work out which column separates the rows of one day, if any.
 	group, err := findGroupColumn(path, names, numeric, rows, rowsPerDay, groupBy)
 	if err != nil {
@@ -819,10 +855,48 @@ func readCSVFilling(path string, want []string, groupBy string, fillAbsent bool)
 		if want == "" {
 			continue
 		}
+		// The best column of that concept, not the first one in the file. Taking
+		// the first made the blended figure depend on the order the columns were
+		// downloaded in: on a Meta header where "Reach" and "Landing page views"
+		// precede "Impressions", account CTR came out 1.95% against a true 1.00%,
+		// and swapping two columns in the same file changed it to 1.000.
+		//
+		// Ranked by how canonical the name is -- patternRank is the position of the
+		// matched pattern in its concept's list, which is written most-canonical
+		// first, so "Impressions" beats "Landing page views" beats "Reach" -- then
+		// by the shorter name, so plain "Clicks" beats "Outbound clicks".
+		// Two ways a column qualifies. Either its name contains the denominator the
+		// rate names -- "Cost per add to cart" wants an adds-to-cart column -- or it
+		// is the canonical column for the concept, meaning it matched that concept's
+		// first pattern ("Impressions", "Clicks"), which is what a bare CTR or CPC
+		// means by its denominator.
+		//
+		// Anything else is a guess and is refused, because a plausible wrong weight
+		// is worse than no weight: on the real Meta export, "Cost per add to cart"
+		// was being weighted by "Website purchases" -- the right concept, the wrong
+		// column -- for a gap of up to 31.9% against the honest unweighted mean.
+		phrase := denominatorPhrase(n)
+		best, bestRank, bestLen := -1, 1<<30, 1<<30
 		for k2, n2 := range stored {
-			if k2 != k && d.Concept[n2] == want {
-				rateWeight[n] = usable[k2]
-				break
+			if k2 == k || d.Concept[n2] != want || mean[n2] {
+				continue
+			}
+			r := patternRank(n2, want)
+			if phrase != "" && strings.Contains(normaliseColumn(n2), " "+phrase+" ") {
+				r = -1 // names the very thing the rate is per
+			} else if r >= canonCount(want) {
+				continue // not canonical and not named: not a weight, a guess
+			}
+			if r < bestRank || (r == bestRank && len(n2) < bestLen) {
+				best, bestRank, bestLen = usable[k2], r, len(n2)
+			}
+		}
+		if best >= 0 {
+			rateWeight[n] = best
+			for k2, n2 := range stored {
+				if usable[k2] == best {
+					d.WeightedBy[n] = n2
+				}
 			}
 		}
 	}
@@ -891,10 +965,15 @@ func readCSVFilling(path string, want []string, groupBy string, fillAbsent bool)
 				w := 1.0
 				if wc, ok := rateWeight[n]; ok {
 					w = cols[wc][i]
-				} else if rw.line == filledLine {
-					// No weight column to fall back on. A row -fill-absent invented
-					// is not a campaign that reported a rate, so it is left out of
-					// the mean rather than counted as a zero.
+				} else if rw.line == filledLine || cellIsNoData(rw.raw[c+1]) {
+					// No weight column to fall back on, so the mean is unweighted --
+					// over the campaigns that actually reported a rate. A row
+					// -fill-absent invented never reported one, and neither did a
+					// campaign whose cell is blank or "-". Counting either as a rate
+					// of zero pulled the account figure down: three campaigns at 20,
+					// 40 and "-" gave 20.00 where the mean of those that reported is
+					// 30.00, and the bigger the campaign with nothing to report, the
+					// lower the account's apparent cost per purchase.
 					w = 0
 				}
 				rateNum[n][di] += v * w
@@ -1436,35 +1515,53 @@ func looksLikeIdentifier(name string) bool {
 // real export, because looksLikeRatio knew only "ctr", "rate", "%", "ratio",
 // "share" and "avg", and a sum of per-unit costs is not a number that means
 // anything.
+// canon is how many of the leading patterns are plain names for the concept
+// itself, as opposed to a particular kind of it. "Impressions", "Impr." and "Imps"
+// all just mean impressions; "Views" and "Plays" are specific things that are
+// counted like impressions. Only a canonical column can serve as a rate's
+// denominator, which is what stops a cost-per-add-to-cart being weighted by a
+// purchases column that happens to share the concept.
 var wantedMetrics = []struct {
 	concept  string
 	addable  bool
+	canon    int
 	patterns []string
 }{
 	// Before "spend", or every cost-per-something reads as spend. Before
 	// "conversions", or "cost per conversion" reads as a conversion count.
-	{"cost per", false, []string{"cpa", "cpc", "cpm", "cpv", "cpl", "cost per",
+	{"cost per", false, 0, []string{"cpa", "cpc", "cpm", "cpv", "cpl", "cost per",
 		"cost pe", "spend per", "revenue per", "value per"}},
 	// Before "clicks" and "conversions", so "click-through rate" and "conversion
 	// rate" are rates rather than counts.
-	{"rate", false, []string{"ctr", "cvr", "roas", "rate", "ratio", "share",
-		"percent", "avg", "average", "mean"}},
+	{"rate", false, 0, []string{"ctr", "cvr", "roas", "rate", "ratio", "share",
+		"percent", "frequency", "avg", "average", "mean"}},
 	// Before "conversions", or "conversion value" is counted as conversions.
 	// "conv value" as well as "conversion value": Google Ads writes its revenue
 	// column "Conv. value", which normalises to "conv value" and was matching
 	// "conv" from the conversions group below -- revenue counted as a conversion
 	// count. Both are additive so no total was wrong, but the label was.
-	{"revenue", true, []string{"revenue", "conversion value", "conversions value",
+	{"revenue", true, 7, []string{"revenue", "conversion value", "conversions value",
 		"conv value", "convs value", "purchase value", "purchases value", "sales",
 		"turnover"}},
-	{"conversions", true, []string{"conversions", "conversion", "conv", "purchases",
+	{"conversions", true, 3, []string{"conversions", "conversion", "conv", "purchases",
 		"purchase", "results", "result", "leads", "lead", "signups", "sign ups",
 		"installs", "install", "registrations", "add to cart", "adds to cart",
 		"orders", "order", "actions", "action"}},
-	{"clicks", true, []string{"clicks", "click", "taps", "tap", "visits", "sessions"}},
-	{"impressions", true, []string{"impressions", "impression", "impr", "imps",
-		"imp", "views", "view", "reach", "plays"}},
-	{"spend", true, []string{"cost", "spend", "spent", "amount"}},
+	// "landing page views" before the impressions group claims "views": it is a
+	// post-click event, nearer a click than an impression, and putting it among
+	// impressions also let it hijack CTR's denominator.
+	{"clicks", true, 2, []string{"clicks", "click", "landing page views",
+		"landing page view", "taps", "tap", "visits", "sessions"}},
+	// Reach is deliberately NOT here. It counts deduplicated people, so it does not
+	// add across campaigns -- audiences overlap -- and the account's true reach is
+	// not derivable from the export at all. It was being summed and labelled an
+	// impression: three campaigns reaching 600, 700 and 800 gave an account reach
+	// of 2,100 when the truth might be 900. Rather than pick a wrong aggregation it
+	// is left out of the allow-list, so it is stored and named on screen but not
+	// forecast. Frequency, which is impressions over reach, is a rate and is below.
+	{"impressions", true, 5, []string{"impressions", "impression", "impr", "imps",
+		"imp", "views", "view", "plays"}},
+	{"spend", true, 4, []string{"cost", "spend", "spent", "amount"}},
 }
 
 // normaliseColumn reduces a column name to lowercase words so a pattern can be
@@ -1475,12 +1572,7 @@ var wantedMetrics = []struct {
 // Whole words, never substrings, and this matters: a substring rule for "budget"
 // would also claim "Budget name", and one for "imp" would claim "important".
 func normaliseColumn(name string) string {
-	n := strings.ToLower(strings.TrimSpace(name))
-	if i := strings.IndexByte(n, '('); i >= 0 {
-		if j := strings.IndexByte(n[i:], ')'); j >= 0 {
-			n = n[:i] + n[i+j+1:]
-		}
-	}
+	n := foldAccents(strings.ToLower(strings.TrimSpace(withoutQualifier(name))))
 	var b strings.Builder
 	for _, r := range n {
 		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
@@ -1490,6 +1582,69 @@ func normaliseColumn(name string) string {
 		}
 	}
 	return " " + strings.Join(strings.Fields(b.String()), " ") + " "
+}
+
+// withoutQualifier drops a parenthesised suffix: "Amount spent (USD)" is spend,
+// and "Purchases (web/app)" is a count of purchases, not a ratio.
+func withoutQualifier(name string) string {
+	for {
+		i := strings.IndexByte(name, '(')
+		if i < 0 {
+			return name
+		}
+		j := strings.IndexByte(name[i:], ')')
+		if j < 0 {
+			return name[:i] // unbalanced: drop the rest rather than keep half of it
+		}
+		name = name[:i] + name[i+j+1:]
+	}
+}
+
+// foldAccents reduces the Latin letters an export actually uses to ASCII, so a
+// non-English header is matched on its letters rather than thrown away. Keeping
+// only [a-z0-9] turned "Coût" into "co t", which matched nothing and silently
+// dropped the column from the forecast.
+func foldAccents(s string) string {
+	const from = "àáâãäåèéêëìíîïòóôõöùúûüýÿñçšžœæðþ"
+	var b strings.Builder
+	for _, r := range s {
+		switch {
+		case r == 'œ':
+			b.WriteString("oe")
+		case r == 'æ':
+			b.WriteString("ae")
+		case strings.ContainsRune(from, r):
+			switch {
+			case strings.ContainsRune("àáâãäå", r):
+				b.WriteRune('a')
+			case strings.ContainsRune("èéêë", r):
+				b.WriteRune('e')
+			case strings.ContainsRune("ìíîï", r):
+				b.WriteRune('i')
+			case strings.ContainsRune("òóôõö", r):
+				b.WriteRune('o')
+			case strings.ContainsRune("ùúûü", r):
+				b.WriteRune('u')
+			case strings.ContainsRune("ýÿ", r):
+				b.WriteRune('y')
+			case r == 'ñ':
+				b.WriteRune('n')
+			case r == 'ç':
+				b.WriteRune('c')
+			case r == 'š':
+				b.WriteRune('s')
+			case r == 'ž':
+				b.WriteRune('z')
+			case r == 'ð':
+				b.WriteRune('d')
+			case r == 'þ':
+				b.WriteString("th")
+			}
+		default:
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
 }
 
 // metricConcept says which of the wanted metrics a column is, if any. The second
@@ -1506,8 +1661,8 @@ func metricConcept(name string) (string, bool, bool) {
 	// as 74.96 against a true 31.78, and ROAS as 8.75 against a true 3.53 -- while
 	// the same file's "ROAS" column, which does match the rate group, stored 2.92.
 	// Two spellings of one metric, two wrong answers, on the page together.
-	if strings.Contains(name, "/") {
-		for _, part := range strings.Split(name, "/") {
+	if bare := withoutQualifier(name); strings.Contains(bare, "/") {
+		for _, part := range strings.Split(bare, "/") {
 			for _, m := range wantedMetrics {
 				for _, pat := range m.patterns {
 					if strings.Contains(normaliseColumn(part), " "+pat+" ") {
@@ -1706,6 +1861,47 @@ func rateDenominator(name string) string {
 		}
 	}
 	return ""
+}
+
+// denominatorPhrase is the words a rate says it is "per": "Cost per add to cart"
+// is per "add to cart". Empty for an abbreviation like CTR, which names no words.
+func denominatorPhrase(name string) string {
+	n := normaliseColumn(name)
+	if i := strings.LastIndex(withoutQualifier(name), "/"); i >= 0 {
+		return strings.TrimSpace(normaliseColumn(withoutQualifier(name)[i+1:]))
+	}
+	if i := strings.Index(n, " per "); i >= 0 {
+		return strings.TrimSpace(n[i+4:])
+	}
+	return ""
+}
+
+// canonCount is how many leading patterns name the concept plainly.
+func canonCount(concept string) int {
+	for _, m := range wantedMetrics {
+		if m.concept == concept {
+			return m.canon
+		}
+	}
+	return 0
+}
+
+// patternRank says how canonical a column's name is for a concept: the position
+// of the pattern it matched in that concept's list, which is written
+// most-canonical first. Lower is better. Unmatched sorts last.
+func patternRank(name, concept string) int {
+	n := normaliseColumn(name)
+	for _, m := range wantedMetrics {
+		if m.concept != concept {
+			continue
+		}
+		for i, pat := range m.patterns {
+			if strings.Contains(n, " "+pat+" ") {
+				return i
+			}
+		}
+	}
+	return 1 << 29
 }
 
 // metricConceptPlain is metricConcept without the slash rule, for asking what one
@@ -1925,17 +2121,104 @@ func exclusionLines(d *Data) []string {
 	var out []string
 	if len(d.Paused) > 0 {
 		out = append(out, "  switched off in the export, stored but not forecast: "+
-			strings.Join(d.Paused, ", "))
+			listSome(d.Paused))
 	}
 	if len(d.Stopped) > 0 {
 		out = append(out, "  stopped running before the export's last day, stored but not forecast: "+
-			strings.Join(d.Stopped, ", "))
+			listSome(d.Stopped))
 	}
 	if len(idle) > 0 {
-		out = append(out, "  no activity at all, stored but not forecast: "+
-			strings.Join(idle, ", "))
+		out = append(out, "  no activity at all, stored but not forecast: "+listSome(idle))
 	}
 	return out
+}
+
+// blendLines says, per rate, how the account figure was arrived at.
+//
+// The two answers differ by multiples and were printed identically. Measured on
+// one file downloaded twice, once with an impressions column and once without:
+// account CTR 0.5645 against 4.4633, from the same campaign CTRs, both announced
+// as "blended". A reader comparing month to month sees a 7.9x change that is
+// entirely an artefact of which columns were ticked in the download dialog.
+func blendLines(d *Data, metrics []string) []string {
+	var weighted, plain []string
+	for _, n := range intersect(d.Averaged, metrics) {
+		if w := d.WeightedBy[n]; w != "" {
+			weighted = append(weighted, fmt.Sprintf("%s (by %s)", n, w))
+		} else {
+			plain = append(plain, n)
+		}
+	}
+	var out []string
+	if len(weighted) > 0 {
+		out = append(out, "  account figure is the blended rate, weighted by the "+
+			"column named: "+strings.Join(weighted, ", "))
+	}
+	if len(plain) > 0 {
+		out = append(out, "  account figure is a plain mean of the campaigns that "+
+			"reported -- this file has no column to weight by, so it is NOT the "+
+			"blended rate: "+strings.Join(plain, ", "))
+	}
+	return out
+}
+
+// oneCurrency refuses an export that mixes them.
+//
+// A multi-market or MCC download carries a currency column, and every figure this
+// tool derives -- the account total, a blended CPA, a ROAS, everything accuracy
+// scores -- is arithmetic across the rows. Adding 100 USD to 300 EUR gives 400 of
+// nothing. The column was read, classified as text and then ignored, so the sum
+// was printed with no marker of any kind.
+//
+// Where there is exactly one currency it is kept, so the report can say which.
+func oneCurrency(path string, d *Data) error {
+	col := ""
+	for _, n := range d.Skipped {
+		if c := normaliseColumn(n); strings.Contains(c, " currency ") ||
+			strings.Contains(c, " currency code ") {
+			col = n
+			break
+		}
+	}
+	if col == "" {
+		return nil
+	}
+	seen := map[string]bool{}
+	var found []string
+	for _, r := range d.Raw {
+		v := strings.TrimSpace(r.Data[col])
+		if v != "" && !seen[v] {
+			seen[v] = true
+			found = append(found, v)
+		}
+	}
+	sort.Strings(found)
+	if len(found) > 1 {
+		return fmt.Errorf("%s mixes %d currencies (%s in %q). Every figure here is "+
+			"arithmetic across the rows -- the account total, the blended rates -- and "+
+			"adding two currencies together gives a number in neither. Export one "+
+			"currency at a time",
+			path, len(found), strings.Join(found, ", "), col)
+	}
+	if len(found) == 1 {
+		d.Currency = found[0]
+	}
+	return nil
+}
+
+// listSome names the first few and counts the rest.
+//
+// The list is chosen by the file, so it is unbounded: a 20,000-campaign export put
+// 308,935 bytes on a single terminal line, 99.4% of the whole run's output, which
+// scrolls away every message worth reading -- including the "forecasting:" line
+// the docs tell people to check when something is missing. The full list is in the
+// database, which is where a list that long belongs.
+func listSome(names []string) string {
+	const show = 12
+	if len(names) <= show {
+		return strings.Join(names, ", ")
+	}
+	return fmt.Sprintf("%s and %d more", strings.Join(names[:show], ", "), len(names)-show)
 }
 
 // intersect keeps the members of list that are also in keep, in list's order.

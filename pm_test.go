@@ -1274,8 +1274,11 @@ func TestMetricConceptOrderIsLoadBearing(t *testing.T) {
 
 	// Patterns match whole words, never substrings. A substring rule for "imp"
 	// would claim "Impact", and one for "order" would claim "Reorder rank".
+	// "Frequency cap reached" was here as an invented example and has been removed:
+	// "Frequency" is a real Meta metric (impressions over reach) and is now matched
+	// as a rate, which is correct. These are all genuine non-metric columns.
 	for _, col := range []string{"Impact", "Quality score", "Ad relevance",
-		"Days since launch", "Frequency cap reached"} {
+		"Days since launch", "Optimisation score"} {
 		if c, _, ok := metricConcept(col); ok {
 			t.Errorf("%q matched %q; it is not one of the metrics we forecast",
 				col, c)
@@ -1719,5 +1722,168 @@ func TestAnAbsurdlyShapedFileIsRefusedNotSwallowed(t *testing.T) {
 	_, err = readCSV(writeTemp(t, "bigcell.csv", big), nil, "")
 	if err == nil || !strings.Contains(err.Error(), "over the") {
 		t.Errorf("an oversized cell must be refused, got: %v", err)
+	}
+}
+
+// Round 7/8/10: how the account figure for a rate was arrived at.
+func TestBlendedRatePicksTheRightDenominatorOrNone(t *testing.T) {
+	// Two columns share the concept "impressions". CTR's denominator is the
+	// canonical one, whatever order they arrive in: taking the first made the
+	// account CTR depend on the download dialog.
+	build := func(first, second string) string {
+		var b strings.Builder
+		fmt.Fprintf(&b, "Day,Campaign,%s,%s,Clicks,CTR\n", first, second)
+		for i := 0; i < 40; i++ {
+			a1, a2 := "100", "1000" // LPV, Impr for campaign A
+			if first == "Impr." {
+				a1, a2 = "1000", "100"
+			}
+			fmt.Fprintf(&b, "%s,A,%s,%s,100,10.0\n", day(i), a1, a2)
+			b1, b2 := "1000", "100"
+			if first == "Impr." {
+				b1, b2 = "100", "1000"
+			}
+			fmt.Fprintf(&b, "%s,B,%s,%s,1,1.0\n", day(i), b1, b2)
+		}
+		return b.String()
+	}
+	// A: 100 clicks / 1000 impr = 10%. B: 1 click / 100 impr = 1%.
+	// Blended: 101 clicks / 1100 impr = 9.1818%.
+	for _, order := range [][2]string{{"Landing page views", "Impr."}, {"Impr.", "Landing page views"}} {
+		d, err := readCSV(writeTemp(t, "ctr.csv", build(order[0], order[1])), nil, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := d.Values[AccountEntity]["CTR"][0]; math.Abs(got-101.0/1100*100) > 1e-9 {
+			t.Errorf("columns %v: account CTR = %v, want 9.1818 (101 clicks over 1100 "+
+				"impressions)", order, got)
+		}
+		if d.WeightedBy["CTR"] != "Impr." {
+			t.Errorf("columns %v: weighted by %q, want %q", order, d.WeightedBy["CTR"], "Impr.")
+		}
+	}
+
+	// The right concept is not the right column. "Cost per add to cart" wants an
+	// adds-to-cart count; a purchases column merely shares its concept, and
+	// weighting by it was wrong by up to 31.9% on the real Meta export. With no
+	// valid weight the honest answer is the unweighted mean, said plainly.
+	var b strings.Builder
+	b.WriteString("Day,Campaign,Cost,Purchases,Cost per add to cart\n")
+	for i := 0; i < 40; i++ {
+		fmt.Fprintf(&b, "%s,A,100,10,5\n", day(i))
+		fmt.Fprintf(&b, "%s,B,900,1,25\n", day(i))
+	}
+	d, err := readCSV(writeTemp(t, "cpatc.csv", b.String()), nil, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if w := d.WeightedBy["Cost per add to cart"]; w != "" {
+		t.Errorf("weighted by %q; there is no adds-to-cart column, so it must fall "+
+			"back to an unweighted mean rather than guess", w)
+	}
+	if got := d.Values[AccountEntity]["Cost per add to cart"][0]; math.Abs(got-15) > 1e-9 {
+		t.Errorf("account = %v, want 15 (the mean of 5 and 25)", got)
+	}
+}
+
+// Round 7: a campaign that reported no rate is not a campaign with a rate of zero.
+func TestABlankRateIsNotARateOfZero(t *testing.T) {
+	var b strings.Builder
+	b.WriteString("Day,Campaign,Cost,Cost per purchase\n")
+	for i := 0; i < 40; i++ {
+		fmt.Fprintf(&b, "%s,A,100,20\n", day(i))
+		fmt.Fprintf(&b, "%s,B,200,40\n", day(i))
+		fmt.Fprintf(&b, "%s,C,300,-\n", day(i)) // spent, reported nothing
+	}
+	d, err := readCSV(writeTemp(t, "blankrate.csv", b.String()), nil, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := d.Values[AccountEntity]["Cost per purchase"][0]; math.Abs(got-30) > 1e-9 {
+		t.Errorf("account = %v, want 30 (the mean of 20 and 40). Counting C's blank "+
+			"as a rate of zero gives 20, and the bigger the campaign with nothing to "+
+			"report, the lower the account's apparent cost per purchase", got)
+	}
+}
+
+// Round 8: every uniqueness guard keys on the campaign value, so cleaning it
+// afterwards meant they were all proved about a different string than the one
+// used. One invisible byte walked past all three.
+func TestControlCharactersCannotWalkPastTheGuards(t *testing.T) {
+	mk := func(second string) string {
+		var b strings.Builder
+		b.WriteString("Day,Campaign,Cost\n")
+		for i := 0; i < 40; i++ {
+			fmt.Fprintf(&b, "%s,Alpha,%d\n", day(i), 100+i)
+			fmt.Fprintf(&b, "%s,%s,%d\n", day(i), second, 50+i)
+		}
+		return b.String()
+	}
+	if _, err := readCSV(writeTemp(t, "acct.csv", mk("\x01(account)")), nil, ""); err == nil {
+		t.Error("a campaign named \"\\x01(account)\" must be refused like \"(account)\"; " +
+			"it was folded into the total and vanished as an entity")
+	}
+	if _, err := readCSV(writeTemp(t, "dupe.csv", mk("Alpha\x01")), nil, ""); err == nil {
+		t.Error("\"Alpha\" and \"Alpha\\x01\" must not silently become one campaign " +
+			"holding both their numbers")
+	}
+}
+
+// Round 8: a slash inside a parenthesised qualifier is not a ratio.
+func TestAQualifierSlashDoesNotMakeARatio(t *testing.T) {
+	var b strings.Builder
+	b.WriteString("Day,Campaign,Purchases (web/app)\n")
+	for i := 0; i < 40; i++ {
+		fmt.Fprintf(&b, "%s,A,10\n", day(i))
+		fmt.Fprintf(&b, "%s,B,2\n", day(i))
+	}
+	d, err := readCSV(writeTemp(t, "paren.csv", b.String()), nil, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := d.Values[AccountEntity]["Purchases (web/app)"][0]; got != 12 {
+		t.Errorf("account = %v, want 12. Ten purchases plus two purchases is twelve "+
+			"purchases; reading (web/app) as a ratio averaged them to 6", got)
+	}
+}
+
+// Round 7: adding 100 USD to 300 EUR gives 400 of nothing.
+func TestMixedCurrenciesAreRefused(t *testing.T) {
+	var b strings.Builder
+	b.WriteString("Day,Campaign,Currency code,Cost\n")
+	for i := 0; i < 40; i++ {
+		fmt.Fprintf(&b, "%s,US Brand,USD,100\n", day(i))
+		fmt.Fprintf(&b, "%s,EU Brand,EUR,300\n", day(i))
+	}
+	_, err := readCSV(writeTemp(t, "mixed.csv", b.String()), nil, "")
+	if err == nil || !strings.Contains(err.Error(), "currencies") {
+		t.Fatalf("a mixed-currency export must be refused, got: %v", err)
+	}
+
+	// One currency is kept, so the output can say which.
+	one := strings.ReplaceAll(b.String(), "EUR", "USD")
+	d, err := readCSV(writeTemp(t, "one.csv", one), nil, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.Currency != "USD" {
+		t.Errorf("currency = %q, want USD", d.Currency)
+	}
+}
+
+// Round 9: the list is chosen by the file, so it is unbounded. A 20,000-campaign
+// export put 308,935 bytes on one terminal line -- 99.4% of the whole run's
+// output -- scrolling away every message worth reading.
+func TestALongExclusionListIsCounted(t *testing.T) {
+	var names []string
+	for i := 0; i < 500; i++ {
+		names = append(names, fmt.Sprintf("Campaign %d", i))
+	}
+	got := listSome(names)
+	if len(got) > 300 {
+		t.Errorf("listSome produced %d bytes; it must summarise, not print them all", len(got))
+	}
+	if !strings.Contains(got, "and 488 more") {
+		t.Errorf("listSome must count the rest, got: %s", got)
 	}
 }

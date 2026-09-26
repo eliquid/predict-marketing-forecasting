@@ -132,7 +132,7 @@ func writeComparison(path string, runs []forecastRun, data *Data, days []string,
 		Generated: time.Now().Format("2006-01-02 15:04"),
 		AsOf:      first.AsOf,
 		Horizon:   first.Horizon,
-		Excluded:  data.Inactive,
+		Excluded:  cap12(data.Inactive),
 		HTMX:      template.JS(htmxJS),
 	}
 
@@ -274,6 +274,18 @@ func trainedThrough(info []byte) string {
 		return s
 	}
 	return ""
+}
+
+// cap12 keeps the page readable when the export has thousands of campaigns: the
+// same list went into the HTML verbatim, making a 367 KB page for a one-series
+// forecast.
+func cap12(names []string) []string {
+	const show = 12
+	if len(names) <= show {
+		return names
+	}
+	out := append([]string{}, names[:show]...)
+	return append(out, fmt.Sprintf("and %d more", len(names)-show))
 }
 
 // averagedFrom lists the runs a derived run is the mean of. import.go records them

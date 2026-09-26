@@ -29,6 +29,18 @@ def reply(obj):
     _OUT.flush()
 
 
+def _under_models(rel):
+    """Resolve a registry path, refusing anything that leaves models/."""
+    p = os.path.normpath(os.path.join(HERE, rel))
+    root = os.path.normpath(HERE)
+    if os.path.isabs(rel) or not (p == root or p.startswith(root + os.sep)):
+        sys.exit(f"chronos2ft: models/finetuned.json points at {rel!r}, which is "
+                 f"outside models/. The registry says where the adapter is, so it "
+                 f"has to stay inside the folder it describes. Retrain, or move the "
+                 f"adapter back under models/finetuned/.")
+    return p
+
+
 def load_registered():
     """Read models/finetuned.json and verify the adapter is the one recorded.
 
@@ -46,8 +58,13 @@ def load_registered():
     except (ValueError, KeyError) as e:
         sys.exit(f"chronos2ft: models/finetuned.json is unreadable ({e}) -- retrain")
 
-    # path is stored relative to models/ so the project can be moved
-    meta["path"] = os.path.normpath(os.path.join(HERE, meta["path"]))
+    # path is stored relative to models/ so the project can be moved -- and it is
+    # held to that. An absolute value replaces HERE entirely and "../" escapes it,
+    # so the registry could point the adapter anywhere on disk while only
+    # adapter_model.safetensors is checksummed and everything else in that
+    # directory (adapter_config.json, whatever from_pretrained picks up) is not.
+    # The worker then writes adapter_config.json back into wherever it was sent.
+    meta["path"] = _under_models(meta["path"])
     adapter = os.path.join(meta["path"], "adapter_model.safetensors")
     if not os.path.isfile(adapter):
         sys.exit(f"chronos2ft: adapter missing at {adapter} -- retrain")
@@ -91,6 +108,10 @@ def main():
            # line is stored verbatim on every run, so provenance keeps it
            "finetune_mode": meta["finetune_mode"],
            "trained_through": meta["trained_through"],
+           # The file it was fitted to, so the forecaster can say whose numbers
+           # this adapter learned from. Basename only: the report is shareable and
+           # an absolute path names the machine it was trained on.
+           "trained_on": os.path.basename(meta.get("source_csv", "")),
            "trained_from": meta["trained_from"],
            "train_series": meta["train_series"],
            "train_metrics": meta["train_metrics"],

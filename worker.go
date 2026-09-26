@@ -21,6 +21,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -49,6 +50,9 @@ type Handshake struct {
 	Covariates    bool              `json:"covariates"` // accepts known-future values?
 	Quantiles     []float64         `json:"quantiles"`
 	Versions      map[string]string `json:"versions"`
+	// Set only by a model fitted to the user's own data.
+	TrainedThrough string `json:"trained_through"`
+	TrainedOn      string `json:"trained_on"`
 }
 
 type request struct {
@@ -111,6 +115,12 @@ func lastLine(s string) string {
 // running after five minutes is stuck, not busy.
 const forecastTimeout = 5 * time.Minute
 
+// startupTimeout bounds the handshake. Loading weights off a cold disk is slow and
+// legitimate, so this is generous; it exists to end an infinite wait, not to hurry
+// anyone. Lower than forecastTimeout because starting up does less work than
+// forecasting does.
+const startupTimeout = 3 * time.Minute
+
 // Worker is a running model process.
 type Worker struct {
 	Name    string
@@ -121,6 +131,12 @@ type Worker struct {
 	// LastCrossing is how far the last forecast's quantiles were out of order
 	// before being sorted, as a fraction. Reported so the repair is never silent.
 	LastCrossing float64
+	// LastClamped counts quantile values the last forecast put below zero, which
+	// floorAtZero raised to zero. Announced for the same reason the crossing repair
+	// is: a run of exactly 0.0 across several quantiles is the clamp, not the
+	// model, and a page that prints "low 0" for a dying campaign otherwise looks
+	// the same as one where the model is merely unsure.
+	LastClamped int
 
 	cmd    *exec.Cmd
 	stdin  io.WriteCloser
@@ -202,6 +218,10 @@ func startWorker(name string) (*Worker, error) {
 	// than "exited before saying hello".
 	var errLog strings.Builder
 	cmd.Stderr = io.MultiWriter(os.Stderr, &errLog)
+	// Its own process group, so killGroup can reach the helpers torch and OpenMP
+	// start. Killing only the direct child leaves those holding the stderr pipe,
+	// which is what made cmd.Wait hang after the work was already finished.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	// Do not litter the models folder with __pycache__ for two ~70-line scripts.
 	cmd.Env = append(os.Environ(), "PYTHONDONTWRITEBYTECODE=1")
 	stdin, err := cmd.StdinPipe()
@@ -221,12 +241,28 @@ func startWorker(name string) (*Worker, error) {
 	w.out = bufio.NewScanner(stdout)
 	w.out.Buffer(make([]byte, 0, 1<<20), 64<<20) // forecasts can be long lines
 
-	if !w.out.Scan() {
-		cmd.Wait()
-		if why := lastLine(errLog.String()); why != "" {
-			return nil, fmt.Errorf("model %q could not start: %s", name, why)
+	// Bounded, like every other read from a model. It was a bare Scan, so a worker
+	// stuck loading -- a stalled cache mount, a sha256 re-read on a hung volume --
+	// hung the whole command forever with no output at all, not even a line saying
+	// which model it was waiting for. An import runs six of these, and a scheduled
+	// one would simply never return.
+	hello := make(chan bool, 1)
+	go func() { hello <- w.out.Scan() }()
+	select {
+	case ok := <-hello:
+		if !ok {
+			cmd.Wait()
+			if why := lastLine(errLog.String()); why != "" {
+				return nil, fmt.Errorf("model %q could not start: %s", name, why)
+			}
+			return nil, fmt.Errorf("model %q exited before saying hello (see errors above)", name)
 		}
-		return nil, fmt.Errorf("model %q exited before saying hello (see errors above)", name)
+	case <-time.After(startupTimeout):
+		_ = cmd.Process.Kill()
+		return nil, fmt.Errorf("model %q did not say hello within %s. It is stuck "+
+			"starting up -- usually loading weights from a slow or stalled disk, or "+
+			"re-reading them to check their checksum. %s",
+			name, startupTimeout, lastLine(errLog.String()))
 	}
 	w.Raw = json.RawMessage(append([]byte(nil), w.out.Bytes()...))
 	if err := json.Unmarshal(w.Raw, &w.Shake); err != nil {
@@ -239,22 +275,58 @@ func startWorker(name string) (*Worker, error) {
 // gives torch a chance to release its shared memory; killing the process instead
 // leaves semaphores behind and prints warnings on the way out.
 func (w *Worker) Close() error {
+	done := make(chan error, 1)
+	go func() { done <- w.cmd.Wait() }()
 	if w.killed {
-		_ = w.cmd.Wait() // already killed by a timeout; just reap it
-		return nil
+		return w.reap(done, "") // already killed by a timeout; just reap it
 	}
 	w.in.Flush()
 	w.stdin.Close()
-	done := make(chan error, 1)
-	go func() { done <- w.cmd.Wait() }()
 	select {
 	case err := <-done:
 		return err
 	case <-time.After(5 * time.Second):
-		_ = w.cmd.Process.Kill()
-		<-done
-		return fmt.Errorf("model %q did not exit; killed", w.Name)
+		killGroup(w.cmd)
+		return w.reap(done, fmt.Sprintf("model %q did not exit; killed", w.Name))
 	}
+}
+
+// reap waits for the process, but not forever.
+//
+// cmd.Wait cannot return while ANY descendant still holds the stderr pipe it
+// inherited, and Kill only kills the direct child -- so a torch or OpenMP helper
+// outliving its parent wedged the whole command after the report had already been
+// written: work finished, file on disk, process never exits. Every exit path runs
+// this defer, so a scheduled job hung with nothing wrong and nothing to show.
+func (w *Worker) reap(done chan error, msg string) error {
+	select {
+	case err := <-done:
+		if msg != "" {
+			return errors.New(msg)
+		}
+		return err
+	case <-time.After(5 * time.Second):
+		// A descendant is holding the pipe open. The child is dead and everything
+		// is written; leaving is correct, and saying nothing about it is not.
+		if msg == "" {
+			msg = fmt.Sprintf("model %q left a background process holding its output "+
+				"open; carrying on without waiting for it", w.Name)
+		}
+		return errors.New(msg)
+	}
+}
+
+// killGroup kills the worker and anything it started. Kill on its own leaves the
+// grandchildren that are the actual problem.
+func killGroup(cmd *exec.Cmd) {
+	if cmd.Process == nil {
+		return
+	}
+	if pgid, err := syscall.Getpgid(cmd.Process.Pid); err == nil && pgid == cmd.Process.Pid {
+		_ = syscall.Kill(-pgid, syscall.SIGKILL)
+		return
+	}
+	_ = cmd.Process.Kill()
 }
 
 // Forecast sends one request and validates the answer before returning it.
@@ -335,7 +407,7 @@ func (w *Worker) Forecast(series [][]float64, metrics []string, horizon int,
 		return nil, fmt.Errorf("model %q returned %d metrics, expected %d",
 			w.Name, len(resp.Quantiles), len(metrics))
 	}
-	w.LastCrossing = 0
+	w.LastCrossing, w.LastClamped = 0, 0
 	for m, per := range resp.Quantiles {
 		crossing, err := checkForecast(per, horizon, len(quantiles))
 		if err != nil {
@@ -345,7 +417,7 @@ func (w *Worker) Forecast(series [][]float64, metrics []string, horizon int,
 		if crossing > w.LastCrossing {
 			w.LastCrossing = crossing
 		}
-		floorAtZero(metrics[m], per)
+		w.LastClamped += floorAtZero(metrics[m], per)
 	}
 	return resp.Quantiles, nil
 }
@@ -420,22 +492,25 @@ const absurdCrossing = 0.05
 // Only the concepts that are physically non-negative. Revenue is deliberately not
 // one of them: a refund is a real negative. Clamping preserves the ordering
 // checkForecast has just verified, since max(0,x) is monotonic.
-func floorAtZero(metric string, days [][]float64) {
+func floorAtZero(metric string, days [][]float64) int {
 	switch c, _, ok := metricConcept(metric); {
 	case !ok, c == "revenue", c == "rate", c == "ratio":
-		return
+		return 0
 	case c == "spend", c == "impressions", c == "clicks", c == "conversions",
 		c == "cost per":
 	default:
-		return
+		return 0
 	}
+	n := 0
 	for _, day := range days {
 		for j, v := range day {
 			if v < 0 {
 				day[j] = 0
+				n++
 			}
 		}
 	}
+	return n
 }
 
 func checkForecast(q [][]float64, horizon, nq int) (float64, error) {

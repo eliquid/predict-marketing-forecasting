@@ -173,6 +173,14 @@ At least 90 days of history is required. A year is better, two years is best.
 
 // importOne is the whole job for a single file.
 func importOne(path, dir, dbPath string, horizon, history int, skipFinetune, fresh, fillAbsent bool) error {
+	// Before anything is wiped or any model is run. A reports folder that cannot be
+	// written -- a synced folder gone read-only is the everyday version -- used to
+	// surface only after clearDatabase had deleted the previous account's runs and
+	// both models had been paid for, leaving a state the recovery skill does not
+	// describe: new runs stored, no report, and last week's forecasts gone.
+	if err := checkWritable(filepath.Join(dir, reportsName)); err != nil {
+		return err
+	}
 	data, err := readCSVFilling(path, nil, "", fillAbsent)
 	if err != nil {
 		// A file below the model floor is also below the import's own, higher
@@ -194,6 +202,12 @@ func importOne(path, dir, dbPath string, horizon, history int, skipFinetune, fre
 		fmt.Printf("  %d rows per day, split by %q\n", data.RowsPerDay, data.GroupBy)
 	}
 	fmt.Printf("  forecasting: %s\n", withConcepts(data, data.Names))
+	if data.Currency != "" {
+		fmt.Printf("  currency: %s\n", data.Currency)
+	}
+	for _, line := range blendLines(data, data.Names) {
+		fmt.Println(line)
+	}
 	if len(data.Inactive) > 0 {
 		fmt.Printf("  note: the (account) series includes those campaigns' history, so " +
 			"its forecast assumes they keep spending. Per-campaign figures do not.\n")
@@ -598,6 +612,23 @@ func trainFinetune(csv string, metrics []string, groupBy, labelBy string) error 
 	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
 	cmd.Env = append(os.Environ(), "PYTHONDONTWRITEBYTECODE=1")
 	return cmd.Run()
+}
+
+// checkWritable proves a directory can be created and written in, before the work
+// that depends on it starts.
+func checkWritable(dir string) error {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return fmt.Errorf("cannot create %s: %w", dir, err)
+	}
+	probe := filepath.Join(dir, ".pm-write-test")
+	f, err := os.OpenFile(probe, os.O_CREATE|os.O_WRONLY, 0o600)
+	if err != nil {
+		return fmt.Errorf("cannot write into %s -- the reports go there, so nothing "+
+			"is started until it is writable: %w", dir, err)
+	}
+	f.Close()
+	os.Remove(probe)
+	return nil
 }
 
 // orphanedReports names report files left over from a previous import, whose runs

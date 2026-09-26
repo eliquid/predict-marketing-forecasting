@@ -97,8 +97,11 @@ def num(s, where=""):
     raw = s.strip()
     neg = raw.startswith("(") and raw.endswith(")")
     t = raw.strip("()")
-    for ch in ("$", "\u00a3", "\u20ac", "%", " ", "\u00a0"):
+    for ch in ("$", "\u00a3", "\u20ac", "\u00a5", "\u20b9", "%"):
         t = t.replace(ch, "")
+    # Every kind of space, the same as parseCell: U+202F is the French group
+    # separator current CLDR emits, and a literal list of two missed it.
+    t = "".join(c for c in t if not c.isspace())
     # The last separator is the decimal point: "1,234.56" is US, "1.234,56" is
     # European. ingest.go's parseCell decides it the same way and has to.
     dot, comma = t.rfind("."), t.rfind(",")

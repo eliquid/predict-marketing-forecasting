@@ -18,11 +18,13 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"runtime/debug"
 	"sort"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -31,6 +33,7 @@ func main() {
 		usage()
 		os.Exit(2)
 	}
+	sayIfInterrupted()
 	var err error
 	switch os.Args[1] {
 	case "setup":
@@ -369,6 +372,17 @@ func cmdForecast(args []string) error {
 		fmt.Printf("  %d rows per day, split by %q (%d rows kept in the raw table)\n",
 			data.RowsPerDay, data.GroupBy, len(data.Raw))
 	}
+	// An adapter is fitted to one account's numbers, and nothing said so outside
+	// report 2 of an import. Forecasting a second account with the first one's
+	// adapter looked identical to forecasting the account it was trained on.
+	if w.Shake.TrainedThrough != "" {
+		on := w.Shake.TrainedOn
+		if on == "" {
+			on = "another export"
+		}
+		fmt.Printf("  note: %s is fitted to %s, through %s. It is the wrong model for "+
+			"anyone else's numbers.\n", w.Name, on, w.Shake.TrainedThrough)
+	}
 	fmt.Printf("  forecasting: %s\n", withConcepts(data, metrics))
 	fmt.Printf("  for %d: %s\n", len(chosen), strings.Join(chosen, ", "))
 	if len(fut) > 0 {
@@ -399,10 +413,11 @@ func cmdForecast(args []string) error {
 	}
 	// Only the ones this run is actually forecasting: -columns narrows the run, and
 	// naming rates it is not touching reads as though they were included.
-	if shown := intersect(data.Averaged, metrics); len(shown) > 0 {
-		fmt.Printf("  rates, blended across campaigns for the account figure "+
-			"(weighted by their own denominator where the file has it): %s\n",
-			strings.Join(shown, ", "))
+	if data.Currency != "" {
+		fmt.Printf("  currency: %s (every money figure below is in it)\n", data.Currency)
+	}
+	for _, line := range blendLines(data, metrics) {
+		fmt.Println(line)
 	}
 	if len(data.Skipped) > 0 {
 		fmt.Printf("  stored but not numbers: %s\n", strings.Join(data.Skipped, ", "))
@@ -410,7 +425,7 @@ func cmdForecast(args []string) error {
 
 	// One request per entity, all on the same model process.
 	forecasts := map[string][][][]float64{}
-	worst := 0.0
+	worst, clamped := 0.0, 0
 	for _, entity := range chosen {
 		series := make([][]float64, len(metrics))
 		for i, n := range metrics {
@@ -425,10 +440,17 @@ func cmdForecast(args []string) error {
 		if w.LastCrossing > worst {
 			worst = w.LastCrossing
 		}
+		clamped += w.LastClamped
 	}
 	if worst > 0 {
 		fmt.Printf("  note: the model returned quantiles slightly out of order "+
 			"(largest %.3f%%); they were sorted back into order\n", worst*100)
+	}
+	if clamped > 0 {
+		fmt.Printf("  note: %d forecast value(s) came back below zero and were raised "+
+			"to zero -- you cannot spend or serve a negative. Where several quantiles\n"+
+			"  read exactly 0, the model is extrapolating off the bottom of the scale "+
+			"rather than being unsure, and the band is narrower than it looks.\n", clamped)
 	}
 
 	days, err := nextDays(data.Days[len(data.Days)-1], *horizon)
@@ -536,6 +558,37 @@ func reorderFlags(args []string) []string {
 	return append(flags, files...)
 }
 
+// sayIfInterrupted prints one line on Ctrl-C and leaves.
+//
+// It used to say nothing at all, and three of the four things on disk after an
+// interrupted import -- the filed CSV, last week's report, its timestamp -- are
+// indistinguishable from a finished run. There is no command that answers "did
+// that finish?", so the moment it stops is the only chance to say so.
+func sayIfInterrupted() {
+	c := make(chan os.Signal, 1)
+	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		<-c
+		fmt.Fprintf(os.Stderr, "\n\nstopped.\n"+
+			"  Nothing is half-written: the database is only changed once every model\n"+
+			"  has answered. If the CSV is still in data/, run the same command again.\n"+
+			"  `./predictmarketing runs` shows what is stored.\n")
+		os.Exit(130)
+	}()
+}
+
+// localTime shows a stored UTC timestamp in the reader's own zone. runs was the
+// only command reporting in UTC, so one import stamped 2026-09-25 on the filed CSV
+// and the report and 2026-09-26 in `runs`, and "when did it last run?" answered
+// with tomorrow.
+func localTime(utc string) string {
+	t, err := time.Parse(time.RFC3339, utc)
+	if err != nil {
+		return utc
+	}
+	return t.Local().Format("2006-01-02 15:04")
+}
+
 func cmdRuns(args []string) error {
 	fs := flag.NewFlagSet("runs", flag.ExitOnError)
 	dbPath := fs.String("db", defaultPath("pm.db"), "database file")
@@ -553,8 +606,14 @@ func cmdRuns(args []string) error {
 	}
 	defer rows.Close()
 
-	fmt.Printf("%-14s %-20s %-16s %-8s %-22s %s\n", "RUN", "SERIES", "MODEL", "HORIZON", "WHEN", "WEIGHTS")
+	header, n := false, 0
 	for rows.Next() {
+		if !header {
+			fmt.Printf("%-14s %-20s %-16s %-8s %-18s %s\n",
+				"RUN", "SERIES", "MODEL", "HORIZON", "WHEN", "WEIGHTS")
+			header = true
+		}
+		n++
 		var id, sid, model, when, info string
 		var h int
 		if err := rows.Scan(&id, &sid, &model, &h, &when, &info); err != nil {
@@ -562,10 +621,19 @@ func cmdRuns(args []string) error {
 		}
 		var hs Handshake
 		json.Unmarshal([]byte(info), &hs)
-		fmt.Printf("%-14s %-20s %-16s %-8d %-22s %s\n",
-			short(id), sid, model, h, when, short(hs.WeightsSHA256))
+		fmt.Printf("%-14s %-20s %-16s %-8d %-18s %s\n",
+			short(id), sid, model, h, localTime(when), short(hs.WeightsSHA256))
 	}
-	return rows.Err()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if n == 0 {
+		// A lone header row and exit 0 reads as output rather than as "nothing
+		// here", which is what the other two commands say properly.
+		fmt.Println("no forecasts stored yet -- run `./predictmarketing import` or " +
+			"`./predictmarketing forecast FILE.csv`")
+	}
+	return nil
 }
 
 func truncate(s string, n int) string {
@@ -702,6 +770,10 @@ func cmdAccuracy(args []string) error {
 		fmt.Println("  no forecast day has an actual yet.")
 	}
 	fmt.Printf("\n  %d forecast days are still waiting for their actuals.\n", waiting)
+	fmt.Printf("  Note: `import` empties the database, so an import is what brings\n" +
+		"  those actuals AND deletes the forecasts waiting for them -- the recurring\n" +
+		"  job can never produce a score. Use `forecast`, which does not wipe, to\n" +
+		"  build a history that can be scored.\n")
 	if leaked > 0 {
 		fmt.Printf("  %d days excluded: a fine-tuned model was trained on them, so\n"+
 			"  scoring against them would measure memorisation, not forecasting.\n", leaked)
